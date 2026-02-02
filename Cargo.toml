@@ -1,0 +1,19 @@
+[package]
+name = "life_gacha"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+        "gacha_protocol",
+        "gacha",
+        "gacha_ui",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = [ "derive" ] }
+serde_json = { version = "1" }
+thiserror = { version = "2" }
+
+[dependencies]

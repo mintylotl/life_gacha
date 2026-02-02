@@ -1,0 +1,8 @@
+[package]
+name = "gacha"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gacha_protocol = { path = "../gacha_protocol" }
+serde_json = { workspace = true }

@@ -6,3 +6,8 @@ edition = "2024"
 [dependencies]
 gacha_protocol = { path = "../gacha_protocol" }
 serde_json = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,3 @@
+[submodule "gacha_protocol"]
+	path = gacha_protocol
+	url = ./gacha_protocol

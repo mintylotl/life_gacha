@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -e
+if [[ ! -d "/home/jwm/Proj/projects/life_gacha" ]]; then
+  echo "Cannot find source directory; Did you move it?"
+  echo "(Looking for "/home/jwm/Proj/projects/life_gacha")"
+  echo 'Cannot force reload with this script - use "direnv reload" manually and then try again'
+  exit 1
+fi
+
+# rebuild the cache forcefully
+_nix_direnv_force_reload=1 direnv exec "/home/jwm/Proj/projects/life_gacha" true
+
+# Update the mtime for .envrc.
+# This will cause direnv to reload again - but without re-building.
+touch "/home/jwm/Proj/projects/life_gacha/.envrc"
+
+# Also update the timestamp of whatever profile_rc we have.
+# This makes sure that we know we are up to date.
+touch -r "/home/jwm/Proj/projects/life_gacha/.envrc" "/home/jwm/Proj/projects/life_gacha/.direnv"/*.rc

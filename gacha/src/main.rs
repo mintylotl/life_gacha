@@ -1,16 +1,12 @@
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::{routing::post, Json, Router};
+use axum::{Json, Router, routing::post};
+use gacha_protocol::{self, PityCtx, Rarities, roll};
 use rusqlite::Error as rusqError;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as serdeError;
-use serde_json::{self, from_slice};
-use std::iter::Fuse;
-use std::net::SocketAddr;
+use serde_json::{self};
 use std::sync::{Arc, Mutex};
-use tokio::net::TcpListener;
-use gacha_protocol::{self, roll, PityCtx, Rarities};
 
 #[derive(thiserror::Error, Debug)]
 enum PersistenceError {
@@ -18,12 +14,8 @@ enum PersistenceError {
     JsonError(#[from] serdeError),
     #[error("Sqlite user loading error!")]
     DBError(#[from] rusqError),
-    #[error("Couldn't make Rarity from Rarities")]
-    SerializeRarityErr,
     #[error("User Not Found")]
     NotFound,
-    #[error("Error creating PityCtx from User")]
-    PityCtxErr
 }
 struct SqliteRepo {
     db: Mutex<Connection>,
@@ -32,8 +24,6 @@ struct SqliteRepo {
 struct UserId(String);
 #[derive(Debug, Deserialize, Serialize)]
 struct Voucher {}
-//#[derive(Debug, Deserialize, Serialize)]
-//struct TotalPullObj(u128, u128, u128, u128);
 
 trait UserRepo {
     fn load(&self, id: UserId) -> Result<User, PersistenceError>;
@@ -65,23 +55,30 @@ impl UserRepo for SqliteRepo {
         let conn = self.db.lock().unwrap();
         let mut stmt = conn.prepare("SELECT data FROM users WHERE id = ?1")?;
 
-        // 1. Load as a String instead of Vec<u8>
-        let user_json: String = stmt.query_row(params![id.0], |row| {
-            row.get(0)
-        }).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => PersistenceError::NotFound,
-            _ => PersistenceError::DBError(e),
-        })?;
+        let user_json: String =
+            stmt.query_row(params![id.0], |row| row.get(0))
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => PersistenceError::NotFound,
+                    _ => PersistenceError::DBError(e),
+                })?;
 
-        // 2. Deserialize directly from the String
         let user: User = serde_json::from_str(&user_json)?;
         Ok(user)
     }
 }
 impl SqliteRepo {
     fn new(path: &str) -> Self {
-        let conn = Connection::open(path).unwrap();
-        Self { db: Mutex::new(conn) }
+        let conn = Connection::open(path).expect("Error opening DB!");
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        )",
+            [],
+        );
+        Self {
+            db: Mutex::new(conn),
+        }
     }
 }
 #[derive(Serialize)]
@@ -100,7 +97,6 @@ impl TryFrom<Rarities> for SerializedRarity {
             Rarities::S => Ok(SerializedRarity::S),
             Rarities::A => Ok(SerializedRarity::A),
             Rarities::B => Ok(SerializedRarity::B),
-            _ => Err(PersistenceError::SerializeRarityErr),
         }
     }
 }
@@ -125,17 +121,36 @@ impl TryFrom<&User> for PityCtx {
 }
 
 #[derive(Clone)]
-pub struct AppState {
-    pub repo: Arc<SqliteRepo>,
+struct AppState {
+    repo: Arc<SqliteRepo>,
 }
 
 fn apply_outcome(user: &mut User, outcome: &Rarities) {
-    println!("User Pity stats: {}\n{}\n{}", user.sss_pity, user.s_pity, user.a_pity);
+    println!(
+        "User Pity stats: {}\n{}\n{}",
+        user.sss_pity, user.s_pity, user.a_pity
+    );
     match outcome {
-        Rarities::MythicSSS => { user.sss_pity = 0; user.s_pity += 1; user.a_pity += 1;  }
-        Rarities::S => { user.s_pity = 0; user.sss_pity += 1; user.a_pity += 1; }
-        Rarities::A => { user.a_pity = 0; user.sss_pity += 1; user.s_pity += 1; }
-        Rarities::B => { user.sss_pity += 1; user.s_pity += 1; user.a_pity += 1; }
+        Rarities::MythicSSS => {
+            user.sss_pity = 0;
+            user.s_pity += 1;
+            user.a_pity += 1;
+        }
+        Rarities::S => {
+            user.s_pity = 0;
+            user.sss_pity += 1;
+            user.a_pity += 1;
+        }
+        Rarities::A => {
+            user.a_pity = 0;
+            user.sss_pity += 1;
+            user.s_pity += 1;
+        }
+        Rarities::B => {
+            user.sss_pity += 1;
+            user.s_pity += 1;
+            user.a_pity += 1;
+        }
     }
     user.total_pulls += 1;
     if user.astrai > 0 {
@@ -145,10 +160,18 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
     user.astrum -= 160;
 }
 
-async fn handle_pull(State(state): State<AppState>, Json(req): Json<PullRequest>) -> Json<PullResponse> {
-    let mut user = state.repo.load(UserId(req.userid)).expect("Error loading user");
+async fn handle_pull(
+    State(state): State<AppState>,
+    Json(req): Json<PullRequest>,
+) -> Json<PullResponse> {
+    let mut user = state
+        .repo
+        .load(UserId(req.userid))
+        .expect("Error loading user");
     if user.astrai < 1 && user.astrum < 160 {
-        return Json(PullResponse { result: SerializedRarity::NoTickets })
+        return Json(PullResponse {
+            result: SerializedRarity::NoTickets,
+        });
     }
 
     let pityctx = PityCtx::try_from(&user).unwrap();
@@ -157,27 +180,21 @@ async fn handle_pull(State(state): State<AppState>, Json(req): Json<PullRequest>
     apply_outcome(&mut user, &outcome);
     let _ = state.repo.save(&user);
 
-    Json(PullResponse { result: SerializedRarity::try_from(outcome).unwrap()})
+    Json(PullResponse {
+        result: SerializedRarity::try_from(outcome).unwrap(),
+    })
 }
 
 #[tokio::main]
 async fn main() {
-    let conn = Connection::open("./userdata.sql").unwrap();
-    let _ = conn.execute(
-        "CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            data TEXT NOT NULL
-        )",
-        [],
-    );
-
-
-    let repo = SqliteRepo {db: conn.into() };
+    let repo = SqliteRepo::new("userdata.sql");
     let state = AppState { repo: repo.into() };
+
     let app = Router::new()
         .route("/pull", post(handle_pull))
         .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
     axum::serve(listener, app).await.unwrap();
 }

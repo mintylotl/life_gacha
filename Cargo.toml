@@ -8,6 +8,7 @@ members = [
         "gacha_protocol",
         "gacha",
         "gacha_ui",
+        "gacha_ui/src-tauri",
 ]
 resolver = "2"
 
@@ -19,6 +20,7 @@ thiserror = "2"
 rand = "0.9.2"
 tokio = {version = "1.49.0", features = ["full"]}
 axum = "0.8.8"
-
+tower-http = { version = "0.5", features = ["cors"] }
+chrono = { version = "0.4.43", features = ["serde"] }
 
 [dependencies]

@@ -2,7 +2,7 @@
   description = "a Flake for node, vite, typescript.";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/b2a3852bd078e68dd2b3dfa8c00c67af1f0a7d20";
+    nixpkgs.url = "github:NixOS/nixpkgs?ref=nixos-25.11";
   };
 
   outputs =
@@ -26,14 +26,14 @@
             openssl_3
             glib
             gtk3
-            libsoup
-            webkitgtk
+            libsoup_3
+            webkitgtk_4_1
             librsvg
           ];
 
           shellHook = ''
             export LD_LIBRARY_PATH=${
-              pkgs.makeLibraryPath (
+              lib.makeLibraryPath (
                 with pkgs;
                 [
                   curl
@@ -42,6 +42,7 @@
                 ]
               )
             }
+            export LD_LIBRARY_PATH="${pkgs.libglvnd}/lib:$LD_LIBRARY_PATH"
           '';
         };
       };

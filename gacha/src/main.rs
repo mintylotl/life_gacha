@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::post};
+use chrono::{DateTime, TimeZone, Timelike, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
 use rusqlite::Error as rusqError;
 use rusqlite::{Connection, params};
@@ -9,6 +10,8 @@ use serde_json::Error as serdeError;
 use serde_json::{self};
 use std::any::Any;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tower_http::cors::CorsLayer;
 
 #[derive(thiserror::Error, Debug)]
 enum PersistenceError {
@@ -22,7 +25,7 @@ enum PersistenceError {
 struct SqliteRepo {
     db: Mutex<Connection>,
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 struct UserId(String);
 #[derive(Debug, Deserialize, Serialize)]
 struct Voucher {}
@@ -37,7 +40,7 @@ trait UserRepo {
     fn load(&self, id: UserId) -> Result<User, PersistenceError>;
     fn save(&self, user: &User) -> Result<(), PersistenceError>;
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct User {
     id: UserId,
     astrai: u64,
@@ -46,8 +49,7 @@ struct User {
     email: Option<String>,
     vouchers: Option<Vec<Voucher>>,
     active_timer: bool,
-    timer_id: String,
-    timer_category: Option<Category>,
+    timer: Option<Timer>,
     sss_pity: u16,
     s_pity: u16,
     a_pity: u16,
@@ -80,17 +82,16 @@ impl UserRepo for SqliteRepo {
 impl SqliteRepo {
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let _user = User {
+        let user = User {
             id: UserId("axol999".to_string()),
             astrum: 1600,
             astrai: 2,
             email: None,
             active_timer: false,
+            timer: None,
             a_pity: 0,
             s_pity: 0,
             sss_pity: 0,
-            timer_category: None,
-            timer_id: "".to_string(),
             total_pulls: 0,
             username: "Axol".to_string(),
             vouchers: None,
@@ -102,11 +103,11 @@ impl SqliteRepo {
         )",
             [],
         );
-        //conn.execute(
-        //    "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
-        //    params![user.id.0, serde_json::to_string_pretty(&user).unwrap()],
-        //);
 
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
+            params![user.id.0, serde_json::to_string(&user).unwrap()],
+        );
         Self {
             db: Mutex::new(conn),
         }
@@ -141,6 +142,31 @@ struct TimerRequest {
 struct TimerResponse {
     status: String,
     timer_id: String,
+    reward: Option<u64>,
+}
+#[derive(Serialize, Deserialize)]
+struct Timer {
+    id: String,
+    owner: UserId,
+    started: DateTime<Utc>,
+    ended: Option<i64>,
+    category: Category,
+}
+impl TimerResponse {
+    fn new(status: String) -> Self {
+        Self {
+            status,
+            timer_id: "".to_string(),
+            reward: None,
+        }
+    }
+    fn already_exists(id: String) -> Self {
+        Self {
+            status: "Timer Already Exists / Active".to_string(),
+            timer_id: id,
+            reward: None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -205,15 +231,15 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
 async fn handle_pull(
     State(state): State<AppState>,
     Json(req): Json<PullRequest>,
-) -> Json<PullResponse> {
+) -> Result<Json<PullResponse>, StatusCode> {
     let mut user = state
         .repo
         .load(UserId(req.userid))
-        .expect("Error loading user");
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     if user.astrai < 1 && user.astrum < 160 {
-        return Json(PullResponse {
+        return Ok(Json(PullResponse {
             result: SerializedRarity::NoTickets,
-        });
+        }));
     }
 
     let pityctx = PityCtx::try_from(&user).unwrap();
@@ -222,9 +248,9 @@ async fn handle_pull(
     apply_outcome(&mut user, &outcome);
     let _ = state.repo.save(&user);
 
-    Json(PullResponse {
+    Ok(Json(PullResponse {
         result: SerializedRarity::try_from(outcome).unwrap(),
-    })
+    }))
 }
 fn gen_timer_id() -> String {
     "1111".to_string()
@@ -233,31 +259,82 @@ fn gen_timer_id() -> String {
 async fn start_timer(
     State(state): State<AppState>,
     Json(req): Json<TimerRequest>,
-) -> Json<TimerResponse> {
+) -> Result<Json<TimerResponse>, StatusCode> {
+    println!("{}, {:?}", req.userid, req.category);
     let mut user = state
         .repo
         .load(UserId(req.userid))
-        .expect("User not loaded");
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
     if user.active_timer {
-        return Json(TimerResponse {
-            status: "Timer already active!".to_string(),
-            timer_id: user.timer_id,
-        });
+        return Ok(Json(TimerResponse::already_exists(user.timer.unwrap().id)));
     }
 
-    match req.category {
-        Category::S_Node => user.timer_category = Some(req.category),
-        Category::A_Node => user.timer_category = Some(req.category),
-        Category::B_Node => user.timer_category = Some(req.category),
-    }
+    user.timer = Some(Timer {
+        category: req.category,
+        ended: None,
+        started: Utc::now(),
+        id: gen_timer_id(),
+        owner: user.id.clone(),
+    });
+
     user.active_timer = true;
-    user.timer_id = gen_timer_id();
     let _ = state.repo.save(&mut user);
 
-    Json(TimerResponse {
+    Ok(Json(TimerResponse {
         status: "Request Accepted".to_string(),
-        timer_id: user.timer_id,
-    })
+        timer_id: user.timer.unwrap().id,
+        reward: Some(0),
+    }))
+}
+
+async fn stop_timer(
+    State(state): State<AppState>,
+    Json(req): Json<TimerRequest>,
+) -> Result<Json<TimerResponse>, StatusCode> {
+    let mut user = state
+        .repo
+        .load(UserId(req.userid))
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if !user.active_timer {
+        return Ok(Json(TimerResponse::new("No Active Timers".to_string())));
+    }
+
+    let timer: Timer = user.timer.unwrap();
+    let reward = Some(resolve_timer(timer));
+    user.active_timer = false;
+    user.timer = None;
+    user.astrum += reward.unwrap();
+    let _ = state.repo.save(&user);
+
+    Ok(Json(TimerResponse {
+        status: format!("Timer Stopped"),
+        timer_id: "".to_string(),
+        reward,
+    }))
+}
+fn resolve_timer(timer: Timer) -> u64 {
+    let duration = Utc::now() - timer.started;
+    let hours = duration.num_hours();
+    let mut reward: i64 = 0;
+
+    if hours < 1 {
+        return 0;
+    }
+
+    match timer.category {
+        Category::S_Node => {
+            reward = hours * 160;
+        }
+        Category::A_Node => {
+            reward = hours * 120;
+        }
+        Category::B_Node => {
+            reward = hours * 60;
+        }
+    }
+    reward as u64
 }
 
 #[tokio::main]
@@ -267,9 +344,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/start_timer", post(start_timer))
-        .with_state(state.clone())
         .route("/pull", post(handle_pull))
-        .with_state(state.clone());
+        .route("/stop_timer", post(stop_timer))
+        .layer(CorsLayer::permissive())
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();

@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::{Json, Router, routing::post};
 use chrono::{DateTime, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
+use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -97,7 +98,7 @@ impl Voucher {
         }
     }
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 enum Category {
     S_Node,
     A_Node,
@@ -114,6 +115,7 @@ struct User {
     astrai: u64,
     astrum: u64,
     flux: i128,
+    has_slip: bool,
     username: String,
     email: Option<String>,
     vouchers: Option<Vec<Voucher>>,
@@ -156,6 +158,7 @@ impl SqliteRepo {
             astrum: 1600,
             astrai: 10,
             flux: 500,
+            has_slip: false,
             email: None,
             active_timer: false,
             timer: None,
@@ -211,10 +214,10 @@ struct TimerRequest {
 #[derive(Serialize)]
 struct TimerResponse {
     status: String,
-    timer_id: String,
+    category: Category,
     reward: Option<u64>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Timer {
     id: String,
     owner: UserId,
@@ -223,17 +226,17 @@ struct Timer {
     category: Category,
 }
 impl TimerResponse {
-    fn new(status: String) -> Self {
+    fn new(status: String, cat: Category) -> Self {
         Self {
             status,
-            timer_id: "".to_string(),
+            category: cat,
             reward: None,
         }
     }
-    fn already_exists(id: String) -> Self {
+    fn already_exists(cat: Category) -> Self {
         Self {
-            status: "Timer Already Exists / Active".to_string(),
-            timer_id: id,
+            status: "Timer Already Active".to_string(),
+            category: cat,
             reward: None,
         }
     }
@@ -270,24 +273,31 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.sss_pity = 0;
             user.s_pity += 1;
             user.a_pity += 1;
-            user.flux += 24000;
+            user.flux += 2400;
 
-            vouchers.push(Voucher::mythic_week());
+            let mut rng = rng();
+            let roll: u8 = rng.random();
+
+            if roll < 128 || user.has_slip {
+                vouchers.push(Voucher::mythic_week());
+            } else {
+                vouchers.push(Voucher::gaming());
+                vouchers.push(Voucher::off_day());
+                user.has_slip = true;
+            }
         }
         Rarities::S => {
             user.s_pity = 0;
             user.sss_pity += 1;
             user.a_pity += 1;
-            user.flux += 650;
-
-            vouchers.push(Voucher::gaming());
+            user.flux += 400;
         }
         Rarities::A => {
             user.a_pity = 0;
             user.sss_pity += 1;
             user.s_pity += 1;
 
-            user.flux += 250;
+            user.flux += 100;
         }
         Rarities::B => {
             user.sss_pity += 1;
@@ -349,7 +359,9 @@ async fn start_timer(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     if user.active_timer {
-        return Ok(Json(TimerResponse::already_exists(user.timer.unwrap().id)));
+        return Ok(Json(TimerResponse::already_exists(
+            user.timer.unwrap().category,
+        )));
     }
 
     user.timer = Some(Timer {
@@ -365,8 +377,8 @@ async fn start_timer(
 
     Ok(Json(TimerResponse {
         status: "Timing...".to_string(),
-        timer_id: user.timer.unwrap().id,
-        reward: Some(0),
+        category: user.timer.unwrap().category,
+        reward: None,
     }))
 }
 
@@ -380,11 +392,14 @@ async fn stop_timer(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     if !user.active_timer {
-        return Ok(Json(TimerResponse::new("No Active Timers".to_string())));
+        return Ok(Json(TimerResponse::new(
+            "No Active Timers".to_string(),
+            Category::S_Node,
+        )));
     }
 
     let timer: Timer = user.timer.unwrap();
-    let reward = Some(resolve_timer(timer));
+    let reward = Some(resolve_timer(timer.clone()));
     user.active_timer = false;
     user.timer = None;
     user.astrum += reward.unwrap();
@@ -392,7 +407,7 @@ async fn stop_timer(
 
     Ok(Json(TimerResponse {
         status: format!("Timer Stopped"),
-        timer_id: "".to_string(),
+        category: timer.category,
         reward,
     }))
 }

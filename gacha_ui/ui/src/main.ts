@@ -88,6 +88,7 @@ async function apiActionPurchase(path: string, type: string) {
     display!.innerHTML = `<div class="text-cyan-400">Error: Insufficient Funds</div>`;
   }
 }
+
 async function apiActionPull10(path: string, payload: object) {
   const display = document.getElementById("result-display");
   const pull_dp = document.getElementById("pull-display");
@@ -103,16 +104,16 @@ async function apiActionPull10(path: string, payload: object) {
       let data = await response.json();
       if (display) {
         if (data.result === "NoTickets") {
-          display.innerHTML = `<div class="bg-red-400 animate-pulse">⚠️ OUT OF TICKETS</div>`;
+          display.innerHTML = `<div class="text-red-400 animate-pulse">⚠️ OUT OF TICKETS</div>`;
           break;
         } else if (data.result === "Mythic") {
           display.innerHTML = `<div class="text-red-400 animate-pulse">${data.result}</div>`;
           mythic += 1;
         } else if (data.result === "S") {
-          display.innerHTML = `<div class="bg-yellow-600 animate-pulse">S</div>`;
+          display.innerHTML = `<div class="text-yellow-600 animate-pulse">S</div>`;
           s += 1;
         } else if (data.result === "A") {
-          display.innerHTML = `<div class="bg-purple-400 animate-pulse">A</div>`;
+          display.innerHTML = `<div class="text-purple-400 animate-pulse">A</div>`;
           a += 1;
         } else {
           display.innerHTML = `<div class="text-blue-400 animate-pulse">${data.result}</div>`;
@@ -124,9 +125,9 @@ async function apiActionPull10(path: string, payload: object) {
         <div class="from-white to-red-400 bg-gradient-to-r animate-pulse text-transparent bg-clip-text">
           Mythics: ${mythic}</br>
         </div>
-        <div class="from-white to-yellow-600 bg-gradient-to-r animate-pulse text-transparent bg-clip-text"> S Ranks: ${s}</div>
-         <div class="from-green-300 to-purple-600 bg-gradient-to-r animate-pulse text-transparent bg-clip-text"> A Ranks: ${a}</div>
-         <div class="from-blue-400 to-blue-600 bg-gradient-to-r animate-pulse text-transparent bg-clip-text"> B Ranks: ${b}</div>`;
+        <div class="from-white to-yellow-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text"> S Ranks: ${s}</div>
+         <div class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text"> A Ranks: ${a}</div>
+         <div class="from-blue-400 to-blue-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text"> B Ranks: ${b}</div>`;
       }
       queryUserFunds("/user_funds_info", { userid: "axol999" });
       await sleep(724);
@@ -164,28 +165,89 @@ async function apiActionPull(path: string, payload: object) {
   }
 }
 
-async function apiActionTimer(path: string, payload: object) {
+interface TimerRequest {
+  userid: string;
+  category: string;
+}
+async function apiActionTimer(path: string, payload: TimerRequest) {
   const display = document.getElementById("result-display");
+  const button_dp = document.getElementById("timer-btn");
 
   try {
-    const response = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-
     if (display) {
       // Logic for pretty-printing results
       if (path === "/stop_timer") {
+        const response = await fetch(`${API_BASE}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+
         if (data.status === "Timer Stopped") {
           display.innerHTML = `<div class="text-red-400 animate-pulse">Timer Stopped</div>`;
+          button_dp!.outerHTML = `
+          <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+            Timer
+          </button>`;
+          document.querySelector("#timer-btn")?.addEventListener("click", () =>
+            apiActionTimer("/start_timer", {
+              userid: "axol999",
+              category: "S_Node",
+            }),
+          );
         } else {
           display.innerHTML = `<div class="animate-pulse">${data.status}</div>`;
         }
       }
-      if (path == "/start_timer") {
-        display.innerHTML = data.status;
+      if (path === "/start_timer") {
+        button_dp!.outerHTML = `
+        <div id="timer-btn" class="flex justify-around items-center gap-1 w-full py-4 bg-slate-700 transition-all rounded-xl font-bold text-lg shadow-lg shadow-slate-500/20">
+          <button id="btn-S_Node" class="flex justify-center ml-6 w-12 bg-yellow-600 hover:bg-yellow-500 active:scale-95 transition-all rounded-sm font-bold text-lg">S</button>
+          <button id="btn-A_Node" class="flex justify-center w-12 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-sm font-bold text-lg">A</button>
+          <button id="btn-B_Node" class="flex justify-center mr-6 w-12 bg-[#4682B4] hover:bg-[#5A9BD5] active:scale-95 transition-all rounded-sm font-bold text-lg">B</button>
+        </div>`;
+
+        document.querySelector("#btn-S_Node")?.addEventListener("click", () => {
+          apiActionTimer("/timer_node", {
+            userid: "axol999",
+            category: "S_Node",
+          });
+        });
+        document.querySelector("#btn-A_Node")?.addEventListener("click", () => {
+          apiActionTimer("/timer_node", {
+            userid: "axol999",
+            category: "A_Node",
+          });
+        });
+        document.querySelector("#btn-B_Node")?.addEventListener("click", () => {
+          apiActionTimer("/timer_node", {
+            userid: "axol999",
+            category: "B_Node",
+          });
+        });
+      }
+      if (path === "/timer_node") {
+        path = "/start_timer";
+        const response = await fetch(`${API_BASE}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+
+        button_dp!.outerHTML = `
+        <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+          Timing: ${data.category}
+        </button>`;
+        display.innerText = data.status;
+
+        document.querySelector("#timer-btn")?.addEventListener("click", () =>
+          apiActionTimer("/start_timer", {
+            userid: "axol999",
+            category: "S_Node",
+          }),
+        );
       }
     }
   } catch (err) {
@@ -193,7 +255,7 @@ async function apiActionTimer(path: string, payload: object) {
   }
 }
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-<button id="store"></button>
+<button id="store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 fixed top-8 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">STORE</button>
 <div id="full-body" class="w-150">
   <div class="w-full p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700">
     <header class="flex flex-col justify-center mb-8 w-full">
@@ -202,10 +264,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           LIFE GACHA
         </h1>
         <h1 class="text-3sm font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
-          LIFE GACHA
+          Axol
         </h1>
       </div>
-      <p class="text-slate-400 text-sm mt-1 uppercase tracking-widest">User: axol999</p>
       <p id="user-funds-display" class="text-slate-400 text-sm mt-1 uppercase tracking-widest">Funds: 0</p>
     </header>
 
@@ -223,7 +284,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button id="pull10-btn" class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
         Pull x10
       </button>
-      <button id="timer-btn-stop" class="w-full py-4 bg-red-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+      <button id="timer-btn-stop" class="w-full py-4 bg-red-600 hover:bg-red-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
         Stop Timer
       </button>
       <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">

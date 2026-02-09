@@ -6,6 +6,6 @@
 
 @layer base {
   body {
-    @apply bg-slate-900 text-white flex justify-center items-center h-screen m-0;
+    @apply bg-slate-900 text-white flex justify-center items-center h-screen w-screen;
   }
 }

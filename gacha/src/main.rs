@@ -11,6 +11,7 @@ use serde_json::Error as serdeError;
 use serde_json::{self};
 use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug)]
 enum PersistenceError {
@@ -31,6 +32,7 @@ struct UserId(String);
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct Voucher {
     id: u64,
+    uuid: Uuid,
     name: String,
     cost: u64,
     description: String,
@@ -43,13 +45,15 @@ impl Voucher {
             10 => Ok(Self::gaming()),
             9 => Ok(Self::slip_gacha()),
             2 => Ok(Self::coffee()),
-
+            3 => Ok(Self::coffee_standard()),
+            24 => Ok(Self::japanese()),
             _ => Err(PersistenceError::InvalidIDVoucher),
         }
     }
-    fn new(id: u64, name: String, cost: u64, desc: String) -> Self {
+    fn new(id: u64, uuid: Uuid, name: String, cost: u64, desc: String) -> Self {
         Self {
             id,
+            uuid,
             name,
             cost,
             description: desc,
@@ -58,7 +62,8 @@ impl Voucher {
     fn mythic_week() -> Self {
         Self {
             id: 999,
-            cost: 800000,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 180000,
             name: "Mythic Week Off".to_string(),
             description: "Get a full week off".to_string(),
         }
@@ -66,7 +71,8 @@ impl Voucher {
     fn off_day() -> Self {
         Self {
             id: 1,
-            cost: 24000,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 1800,
             name: String::from("Full Day Off"),
             description: String::from("Get one full day off"),
         }
@@ -74,35 +80,56 @@ impl Voucher {
     fn gaming() -> Self {
         Self {
             id: 10,
-            cost: 750,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 225,
             name: String::from("Gaming Session (3H)"),
-            description: String::from("4 Hour Gaming Session"),
+            description: String::from("3 Hour Gaming Session"),
         }
     }
     fn slip_gacha() -> Self {
         Self {
             id: 9,
-            cost: 450,
-            name: String::from("Gacha Slip (8H)"),
+            uuid: uuid::Uuid::now_v7(),
+            cost: 120,
+            name: String::from("Gacha Slip (4H)"),
             description: String::from(
-                "Permission Slip for Working on the Gacha Machine for 8 Hours",
+                "Permission Slip for Working on the Gacha Machine for 4 Hours",
             ),
         }
     }
     fn coffee() -> Self {
         Self {
             id: 2,
-            cost: 250,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 150,
             name: String::from("Coffee 250ml"),
             description: String::from("Get 1 cup of Coffee (Premium)"),
+        }
+    }
+    fn coffee_standard() -> Self {
+        Self {
+            id: 3,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 75,
+            name: String::from("Coffee 250ml"),
+            description: String::from("Get 1 cup of Coffee (Standard)"),
+        }
+    }
+    fn japanese() -> Self {
+        Self {
+            id: 24,
+            uuid: uuid::Uuid::now_v7(),
+            cost: 120,
+            name: String::from("Japanese Studies (3H)"),
+            description: String::from("Slip to study Japanese for 3 Hours"),
         }
     }
 }
 #[derive(Debug, Deserialize, Serialize, Clone)]
 enum Category {
-    S_Node,
-    A_Node,
-    B_Node,
+    SNode,
+    ANode,
+    BNode,
 }
 
 trait UserRepo {
@@ -118,7 +145,8 @@ struct User {
     has_slip: bool,
     username: String,
     email: Option<String>,
-    vouchers: Option<Vec<Voucher>>,
+    vouchers: Vec<Voucher>,
+    templates: Vec<Voucher>,
     active_timer: bool,
     timer: Option<Timer>,
     sss_pity: u16,
@@ -153,11 +181,12 @@ impl UserRepo for SqliteRepo {
 impl SqliteRepo {
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
+        let init = false;
         let user = User {
             id: UserId("axol999".to_string()),
-            astrum: 1600,
-            astrai: 10,
-            flux: 500,
+            astrum: 26,
+            astrai: 20,
+            flux: 1675,
             has_slip: false,
             email: None,
             active_timer: false,
@@ -167,7 +196,8 @@ impl SqliteRepo {
             sss_pity: 0,
             total_pulls: 0,
             username: "Axol".to_string(),
-            vouchers: Some(Vec::<Voucher>::new()),
+            vouchers: Vec::<Voucher>::new(),
+            templates: Vec::<Voucher>::new(),
         };
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS users (
@@ -177,10 +207,13 @@ impl SqliteRepo {
             [],
         );
 
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
-            params![user.id.0, serde_json::to_string(&user).unwrap()],
-        );
+        if init {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
+                params![user.id.0, serde_json::to_string(&user).unwrap()],
+            );
+        }
+
         Self {
             db: Mutex::new(conn),
         }
@@ -266,8 +299,16 @@ struct AppState {
     repo: Arc<SqliteRepo>,
 }
 
+fn load_user(userid: String, state: &AppState) -> Result<User, StatusCode> {
+    let user = state
+        .repo
+        .load(UserId(userid))
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(user)
+}
+
 fn apply_outcome(user: &mut User, outcome: &Rarities) {
-    let mut vouchers: Vec<Voucher> = user.vouchers.clone().unwrap();
+    let mut vouchers: Vec<Voucher> = user.vouchers.clone();
     match outcome {
         Rarities::MythicSSS => {
             user.sss_pity = 0;
@@ -282,7 +323,13 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                 vouchers.push(Voucher::mythic_week());
             } else {
                 vouchers.push(Voucher::gaming());
+                vouchers.push(Voucher::gaming());
                 vouchers.push(Voucher::off_day());
+
+                for _x in 0..3 {
+                    vouchers.push(Voucher::coffee());
+                    vouchers.push(Voucher::japanese());
+                }
                 user.has_slip = true;
             }
         }
@@ -290,14 +337,38 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.s_pity = 0;
             user.sss_pity += 1;
             user.a_pity += 1;
-            user.flux += 400;
+            user.flux += 240;
+
+            vouchers.push(Voucher::coffee());
+            vouchers.push(Voucher::new(
+                24,
+                uuid::Uuid::now_v7(),
+                "Japanese [2H]".into(),
+                40,
+                "Study Japanese for 2 Hours".into(),
+            ));
+            vouchers.push(Voucher::new(
+                9,
+                uuid::Uuid::now_v7(),
+                "Gacha Slip [2H]".into(),
+                30,
+                "Permission Slip to Work on LifeGacha for 2 Hours".into(),
+            ));
         }
         Rarities::A => {
             user.a_pity = 0;
             user.sss_pity += 1;
             user.s_pity += 1;
 
-            user.flux += 100;
+            user.flux += 75;
+
+            vouchers.push(Voucher::new(
+                0,
+                uuid::Uuid::now_v7(),
+                "15 Minute Break".into(),
+                20,
+                "Take a 15 minute breather break".into(),
+            ));
         }
         Rarities::B => {
             user.sss_pity += 1;
@@ -308,7 +379,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
         }
     }
 
-    user.vouchers = Some(vouchers);
+    user.vouchers = vouchers;
 
     user.total_pulls += 1;
     if user.astrai > 0 {
@@ -322,11 +393,7 @@ async fn handle_pull(
     State(state): State<AppState>,
     Json(req): Json<PullRequest>,
 ) -> Result<Json<PullResponse>, StatusCode> {
-    println!("Pulled!");
-    let mut user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut user = load_user(req.userid, &state)?;
 
     if user.astrai < 1 && user.astrum < 160 {
         return Ok(Json(PullResponse {
@@ -353,10 +420,7 @@ async fn start_timer(
     Json(req): Json<TimerRequest>,
 ) -> Result<Json<TimerResponse>, StatusCode> {
     println!("{}, {:?}", req.userid, req.category);
-    let mut user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut user = load_user(req.userid, &state)?;
 
     if user.active_timer {
         return Ok(Json(TimerResponse::already_exists(
@@ -386,15 +450,12 @@ async fn stop_timer(
     State(state): State<AppState>,
     Json(req): Json<TimerRequest>,
 ) -> Result<Json<TimerResponse>, StatusCode> {
-    let mut user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut user = load_user(req.userid, &state)?;
 
     if !user.active_timer {
         return Ok(Json(TimerResponse::new(
             "No Active Timers".to_string(),
-            Category::S_Node,
+            Category::SNode,
         )));
     }
 
@@ -413,25 +474,28 @@ async fn stop_timer(
 }
 fn resolve_timer(timer: Timer) -> u64 {
     let duration = Utc::now() - timer.started;
+    println!("Started: {}", timer.started);
     let hours = duration.num_hours();
+    println!("{}", hours);
     let minutes = duration.num_minutes();
+    println!("{}", minutes);
     let mut reward: i64 = 0;
 
-    if hours < 1 && minutes < 30 {
+    if hours < 1 && minutes < 1 {
         return 0;
     }
 
     match timer.category {
-        Category::S_Node => {
-            reward = hours * 160;
+        Category::SNode => reward = ((minutes as f64 / 60.0) * 350.0) as i64,
+        Category::ANode => {
+            reward = ((minutes as f64 / 30.0) as f64 * 80.0) as i64;
         }
-        Category::A_Node => {
-            reward = ((minutes / 30) * 120) as i64;
-        }
-        Category::B_Node => {
-            reward = ((minutes / 15) * 60) as i64;
+        Category::BNode => {
+            reward = ((minutes as f64 / 10.0) as f64 * 20.0) as i64;
         }
     }
+
+    println!("{}", reward);
 
     if reward < 1 {
         return 0;
@@ -461,12 +525,11 @@ async fn get_user_vouchers(
         .load(UserId(req.userid))
         .map_err(|_| StatusCode::NOT_FOUND)?;
     if req.request_all && req.filter_by_id == 0 {
-        return Ok(Json(user.vouchers.unwrap()));
+        return Ok(Json(user.vouchers));
     }
     if req.request_all && req.filter_by_id > 0 {
         let vouchers_mapped: Vec<Voucher> = user
             .vouchers
-            .unwrap()
             .into_iter()
             .filter(|e| e.id == req.filter_by_id)
             .collect();
@@ -479,10 +542,7 @@ async fn purchase(
     State(state): State<AppState>,
     Json(req): Json<PurchaseRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut user = load_user(req.userid, &state)?;
 
     let req_voucher = Voucher::by_id(req.id).map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -491,17 +551,43 @@ async fn purchase(
     }
     user.flux -= (req_voucher.cost * req.amount as u64) as i128;
 
-    let mut vec = user.vouchers.unwrap();
+    let mut vec = user.vouchers;
     vec.push(req_voucher.clone());
-    user.vouchers = Some(vec);
+    user.vouchers = vec;
 
     let _ = state.repo.save(&user);
     Ok(Json(serde_json::json!({
         "result": format!(
-        "Successfully Purchased Item: {}",
+        "Purchased Item: {}",
         &req_voucher.name),
     })))
 }
+
+#[derive(Deserialize)]
+struct ConsumeRequest {
+    userid: String,
+    uuid: Uuid,
+}
+async fn consume(
+    State(state): State<AppState>,
+    Json(req): Json<ConsumeRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut user = load_user(req.userid.clone(), &state)?;
+    let vec: Vec<Voucher>;
+
+    vec = user
+        .vouchers
+        .into_iter()
+        .filter(|f| f.uuid != req.uuid)
+        .collect();
+    user.vouchers = vec;
+
+    let _ = state.repo.save(&user);
+    Ok(Json(serde_json::json!({
+        "status": "Item Consumed",
+    })))
+}
+
 #[derive(Deserialize)]
 struct InfoRequest {
     userid: String,
@@ -536,9 +622,10 @@ async fn main() {
         .route("/get_user_vouchers", post(get_user_vouchers))
         .route("/purchase", post(purchase))
         .route("/user_funds_info", post(get_user_info))
+        .route("/consume", post(consume))
         .layer(CorsLayer::permissive())
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();

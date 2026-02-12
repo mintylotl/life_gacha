@@ -1,6 +1,23 @@
 @import "tailwindcss";
 
 @theme {
+  /* Define the keyframes */
+  @keyframes shake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    25% {
+      transform: translateX(-4px);
+    }
+    75% {
+      transform: translateX(4px);
+    }
+  }
+
+  /* Define the utility name */
+  --animate-shake: shake 0.15s ease-in-out 2;
+
   --color-brand: #6366f1;
 }
 

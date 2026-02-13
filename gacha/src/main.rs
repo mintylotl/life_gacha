@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::post};
-use chrono::{DateTime, Utc};
+use chrono::{Date, DateTime, Datelike, Duration, TimeZone, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
 use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
@@ -43,10 +43,10 @@ impl Voucher {
         match id {
             999 => Ok(Self::mythic_week()),
             1 => Ok(Self::off_day()),
-            10 => Ok(Self::gaming()),
-            9 => Ok(Self::slip_gacha()),
-            2 => Ok(Self::coffee()),
-            3 => Ok(Self::coffee_standard()),
+            2 => Ok(Self::gaming()),
+            3 => Ok(Self::slip_gacha()),
+            4 => Ok(Self::coffee()),
+            5 => Ok(Self::coffee_standard()),
             24 => Ok(Self::japanese()),
             _ => {
                 if userid.is_empty() {
@@ -91,7 +91,7 @@ impl Voucher {
     }
     fn get_templates() -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
-        let codes: [u16; 7] = [1, 2, 3, 9, 10, 24, 999];
+        let codes: [u16; 7] = [1, 2, 3, 4, 5, 24, 999];
 
         for x in codes.into_iter() {
             vec.push(Voucher::by_id(x as u64, "", None).unwrap());
@@ -193,6 +193,7 @@ struct User {
     has_slip: bool,
     username: String,
     email: Option<String>,
+    dailies: Vec<Daily>,
     vouchers: Vec<Voucher>,
     templates: Vec<Voucher>,
     active_timer: bool,
@@ -231,11 +232,11 @@ impl UserRepo for SqliteRepo {
 impl SqliteRepo {
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let init = true;
+        let init = false;
         let user = User {
             id: UserId("axol999".to_string()),
-            astrum: 3200,
-            astrai: 20,
+            astrum: 1600,
+            astrai: 15,
             flux: 500,
             has_slip: false,
             email: None,
@@ -244,6 +245,7 @@ impl SqliteRepo {
             a_pity: 0,
             s_pity: 0,
             sss_pity: 0,
+            dailies: Daily::init(),
             total_pulls: 0,
             total_flux_aq: 0,
             total_astrum_aq: 0,
@@ -395,7 +397,6 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.flux += 240;
             user.total_flux_aq += 240;
 
-            vouchers.push(Voucher::coffee());
             vouchers.push(Voucher::new(
                 24,
                 uuid::Uuid::now_v7(),
@@ -408,10 +409,17 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                 vouchers.push(Voucher::new(
                     9,
                     uuid::Uuid::now_v7(),
-                    "".into(),
+                    "Gacha Slip [2H]".into(),
                     30,
                     "Permission Slip to Work on LifeGacha for 2 Hours".into(),
                 ));
+            }
+            if quick_roll() < 85 {
+                vouchers.push(Voucher::coffee());
+            }
+
+            if quick_roll() < 16 {
+                vouchers.push(Voucher::gaming());
             }
         }
         Rarities::A => {
@@ -437,6 +445,10 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
 
             user.flux += 5;
             user.total_flux_aq += 5;
+
+            if quick_roll() == 24 {
+                vouchers.push(Voucher::gaming());
+            }
         }
     }
 
@@ -570,12 +582,6 @@ struct VoucherRequest {
     filter_by_id: u64,
     store: bool,
 }
-#[derive(Deserialize, Clone)]
-struct PurchaseRequest {
-    userid: String,
-    amount: u8,
-    id: u64,
-}
 async fn get_user_vouchers(
     State(state): State<AppState>,
     Json(req): Json<VoucherRequest>,
@@ -629,6 +635,13 @@ async fn create(
     let _ = state.repo.save(&user);
     Ok(StatusCode::CREATED)
 }
+
+#[derive(Deserialize, Clone)]
+struct PurchaseRequest {
+    userid: String,
+    amount: u8,
+    id: u64,
+}
 async fn purchase(
     State(state): State<AppState>,
     Json(req): Json<PurchaseRequest>,
@@ -680,6 +693,77 @@ async fn consume(
     })))
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+struct Daily {
+    id: u8,
+    claimable: bool,
+    claimed: bool,
+    last_claimed: i64,
+}
+impl Daily {
+    fn init() -> Vec<Self> {
+        let mut vec: Vec<Self> = Vec::new();
+        for i in 0..4 {
+            vec.push(Daily {
+                id: i as u8,
+                claimable: true,
+                claimed: false,
+                last_claimed: 0 as i64,
+            });
+        }
+        vec
+    }
+}
+#[derive(Deserialize)]
+struct DailiesReq {
+    userid: String,
+    info: bool,
+    id: u8,
+}
+#[derive(Serialize)]
+struct DailiesResp {
+    dailies: Vec<Daily>,
+}
+async fn dailies(
+    State(state): State<AppState>,
+    Json(req): Json<DailiesReq>,
+) -> Result<Json<DailiesResp>, StatusCode> {
+    let mut user = load_user(req.userid, &state)?;
+
+    let now = Utc::now();
+    let mut cycle_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), now.day(), 4, 0, 0)
+        .unwrap();
+
+    if now < cycle_start {
+        cycle_start -= Duration::days(1);
+    }
+
+    if req.info {
+        for daily in user.dailies.iter_mut() {
+            if daily.last_claimed >= cycle_start.timestamp() {
+                daily.claimable = false;
+            } else {
+                daily.claimable = true;
+                daily.claimed = false;
+            }
+        }
+
+        let _ = state.repo.save(&user);
+        return Ok(Json(DailiesResp {
+            dailies: user.dailies.clone(),
+        }));
+    }
+    if req.id < 4 && !req.info {
+        user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
+        user.dailies[req.id as usize].claimed = true;
+
+        let _ = state.repo.save(&user);
+    }
+
+    Err(StatusCode::FORBIDDEN)
+}
+
 #[derive(Deserialize)]
 struct InfoRequest {
     userid: String,
@@ -716,6 +800,7 @@ async fn main() {
         .route("/user_funds_info", post(get_user_info))
         .route("/consume", post(consume))
         .route("/create", post(create))
+        .route("/dailies", post(dailies))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

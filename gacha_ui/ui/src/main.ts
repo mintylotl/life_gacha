@@ -7,6 +7,35 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function get_userid() {
   return "axol999";
 }
+
+interface Daily {
+  id: number;
+  claimable: boolean;
+  claimed: boolean;
+  last_claimed: number;
+}
+
+// Logic to update the button UI
+function updateDailyButton(buttonEl: HTMLButtonElement, status: string) {
+  if (status === "ready") {
+    buttonEl.disabled = false;
+    buttonEl.innerText = "Claim";
+    buttonEl.className =
+      "claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-emerald-600 text-slate-900 hover:bg-emerald-400 shadow-lg shadow-emerald-900/20";
+  } else if (status === "claimed") {
+    buttonEl.disabled = true;
+    buttonEl.innerText = "Claimed";
+    buttonEl.className =
+      "claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm bg-slate-900 text-slate-600 border border-slate-800 cursor-not-allowed";
+  } else {
+    // Locked state
+    buttonEl.disabled = true;
+    buttonEl.innerText = "Claim";
+    buttonEl.className =
+      "claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm bg-slate-700 text-slate-500 cursor-not-allowed";
+  }
+}
+
 interface ConsumeRequest {
   userid: string;
   uuid: string;
@@ -50,9 +79,10 @@ async function goHome(store: boolean) {
     }, 50);
   }
 }
-async function queryUserFunds(path: string, payload: object) {
+async function queryUserFunds() {
   let funds_screen = document.getElementById("user-funds-display");
-
+  let path = "/user_funds_info";
+  let payload = { userid: get_userid() };
   try {
     let response = await fetch(`${API_BASE}${path}`, {
       method: "POST",
@@ -72,10 +102,18 @@ async function queryUserFunds(path: string, payload: object) {
 
 interface CreateRequest {
   userid: string;
-  voucher: Voucher;
+  voucher: ReqVoucher;
 }
+interface ReqVoucher {
+  id: number;
+  cost: number;
+  name: string;
+  description: string;
+}
+
 interface Voucher {
   id: number;
+  uuid: string;
   cost: number;
   name: string;
   description: string;
@@ -108,7 +146,7 @@ async function apiActionCreateVoucher(path: string) {
 
       try {
         const formData = new FormData(formElem);
-        const voucher_p: Voucher = {
+        const voucher_p: ReqVoucher = {
           id: Number(formData.get("id")),
           cost: Number(formData.get("cost")),
           name: formData.get("name") as string,
@@ -188,15 +226,18 @@ async function apiActionGetVouchers(
   payload: object,
 ) {
   let page_name = "";
+  let funcName = "";
   if (store) {
-    page_name = "store-page";
+    page_name = "store";
+    funcName = "purchase";
   } else {
-    page_name = "stock-page";
+    page_name = "stock";
+    funcName = "consume";
   }
 
   const home = document.getElementById("home-page");
-  const stock = document.getElementById(page_name);
-  const boxes = document.getElementById("store-boxes");
+  const stock = document.getElementById(`${page_name}-page`);
+  const boxes = document.getElementById(`${page_name}-boxes`);
 
   try {
     let response = await fetch(`${API_BASE}${path}`, {
@@ -205,10 +246,17 @@ async function apiActionGetVouchers(
       body: JSON.stringify(payload),
     });
     let data_v: Voucher[] = await response.json();
-    console.log("Here!");
+
     if (boxes) {
       boxes.innerHTML = "";
       data_v.forEach((voucher) => {
+        let buttonPrefix;
+        if (store) {
+          buttonPrefix = `onclick="${funcName}(${voucher.id})"`;
+        } else {
+          buttonPrefix = `onclick="${funcName}('${voucher.uuid}')"`;
+        }
+
         boxes.innerHTML =
           boxes.innerHTML +
           `
@@ -239,7 +287,7 @@ UUID: ${voucher.uuid}
 </p>
 </div>
 
-<button onclick="consume('${voucher.uuid}')" class="mt-4 w-full bg-emerald-600 text-slate-900 font-black py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
+<button ${buttonPrefix} class="mt-4 w-full bg-emerald-600 text-slate-900 font-black py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
 <span>REDEEM VOUCHER</span>
 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd" />
@@ -267,38 +315,13 @@ UUID: ${voucher.uuid}
   }
 }
 
-async function apiActionPurchase(path: string, type: string) {
-  let payload = { id: 0, userid: get_userid(), amount: 0 };
+(window as any).purchase = async function purchase(id: number) {
+  let payload = { id, userid: get_userid(), amount: 0 };
   const display = document.getElementById("result-display");
   payload.amount = 1;
 
-  switch (type) {
-    case "off_day":
-      payload.id = 1;
-      break;
-
-    case "coffee":
-      payload.id = 3;
-      break;
-
-    case "slip_gacha":
-      payload.id = 9;
-      break;
-
-    case "gaming":
-      payload.id = 10;
-      break;
-
-    case "mythic_week":
-      payload.id = 999;
-      break;
-
-    default:
-      console.log("Default");
-  }
-
   try {
-    let response = await fetch(`${API_BASE}${path}`, {
+    let response = await fetch(`${API_BASE}/purchase`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -309,12 +332,12 @@ async function apiActionPurchase(path: string, type: string) {
     if (display) {
       display.innerHTML = `<div class="text-cyan-400">${data.result}</div>`;
     }
-    queryUserFunds("/user_funds_info", { userid: get_userid() });
+    queryUserFunds();
   } catch (err) {
     console.log(err);
     display!.innerHTML = `<div class="text-cyan-400">Error: Insufficient Funds</div>`;
   }
-}
+};
 
 async function apiActionPull10(path: string) {
   const display = document.getElementById("pull-display");
@@ -322,7 +345,16 @@ async function apiActionPull10(path: string) {
   let [mythic, s, a, b] = [0, 0, 0, 0];
   try {
     if (display) {
-      display.innerText = "";
+      display.innerHTML = `
+        <div class="flex flex-col gap-6 items-center justify-around">
+        <div id="s1" class="from-white to-red-400 bg-gradient-to-r text-transparent bg-clip-text text-3sm">
+          Mythics: 0</br>
+        </div>
+        <div id="s2" class="from-white to-yellow-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> S Ranks: 0</div>
+         <div id="a1" class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> A Ranks: 0</div>
+         <div id="b1" class="from-blue-400 to-blue-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> B Ranks: 0</div>
+        </div>`;
+
       for (let i = 0; i < 10; i++) {
         const result = await apiActionPull(path, [25, 576]);
         if (result === "NoTickets") {
@@ -330,25 +362,58 @@ async function apiActionPull10(path: string) {
         }
         if (result === "Mythic") {
           mythic += 1;
+          display.innerHTML = `
+          <div class="flex flex-col gap-6 items-center justify-around">
+
+          <div class="from-white to-red-500 bg-gradient-to-r text-transparent bg-clip-text text-3xl animate-shake">
+            MYTHIC
+          </div>
+          </div>`;
+          await sleep(8000);
         } else if (result === "S") {
           s += 1;
+          display.innerHTML = `
+          <div class="flex flex-col gap-6 items-center justify-around">
+
+          <div class="from-white to-yellow-600 bg-gradient-to-r text-transparent bg-clip-text text-3xl animate-shake">
+            S
+          </div>
+          </div>`;
+          await sleep(2000);
         } else if (result === "A") {
           a += 1;
+          document.getElementById("a1")!.innerHTML = `
+          <div class="flex flex-col gap-6 items-center justify-around">
+
+          <div class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm animate-pulse">
+            A Ranks: ${a}</br>
+          </div>
+          </div>`;
+          await sleep(500);
         } else {
           b += 1;
+          document.getElementById("b1")!.innerHTML = `
+          <div class="flex flex-col gap-6 items-center justify-around">
+
+          <div class="from-blue-300 to-blue-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm animate-pulse">
+            B Ranks: ${b}</br>
+          </div>
+          </div>`;
+          await sleep(100);
         }
 
         display.innerHTML = `
         <div class="flex flex-col gap-6 items-center justify-around">
-        <div class="from-white to-red-400 bg-gradient-to-r animate-pulse text-transparent bg-clip-text text-sm3">
+        <div id="s1" class="from-white to-red-400 bg-gradient-to-r text-transparent bg-clip-text text-3sm">
           Mythics: ${mythic}</br>
         </div>
-        <div class="from-white to-yellow-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-sm3"> S Ranks: ${s}</div>
-         <div class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-sm3"> A Ranks: ${a}</div>
-         <div class="from-blue-400 to-blue-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-sm3"> B Ranks: ${b}</div>
+        <div id="s2" class="from-white to-yellow-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> S Ranks: ${s}</div>
+         <div id="a1" class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> A Ranks: ${a}</div>
+         <div id="b1" class="from-blue-400 to-blue-600 bg-gradient-to-r text-transparent bg-clip-text text-3sm"> B Ranks: ${b}</div>
         </div>`;
+        await sleep(300);
       }
-      queryUserFunds("/user_funds_info", { userid: get_userid() });
+      queryUserFunds();
     }
   } catch (err) {
     if (display) {
@@ -421,7 +486,7 @@ async function apiActionPull(path: string, delay: number[]) {
         }
       }
     }
-    queryUserFunds("/user_funds_info", { userid: get_userid() });
+    queryUserFunds();
     return data.result;
   } catch (err) {
     if (display) display.innerText = "Error: Server Offline";
@@ -464,7 +529,7 @@ async function apiActionTimer(path: string, payload: TimerRequest) {
           display.innerHTML = `<div class="animate-pulse">${data.status}</div>`;
         }
 
-        queryUserFunds("/user_funds_info", { userid: get_userid() });
+        queryUserFunds();
       }
       if (path === "/start_timer") {
         button_dp!.outerHTML = `
@@ -525,9 +590,7 @@ const modaldivcontent = `
     <div id="create-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
 
     <div class="relative flex flex-col bg-slate-700/90 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-lg border border-slate-600 overflow-hidden">
-
         <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"></div>
-
         <div class="p-8 flex flex-col gap-6">
             <div class="flex justify-between items-center">
                 <h2 class="text-2xl font-black text-slate-100 uppercase tracking-tighter">Forge New Voucher</h2>
@@ -580,9 +643,11 @@ const modaldivcontent = `
     </div>
 </div>
 `;
+
+// MAIN CONTENT
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 <section id="home-page" class="transition-opacity duration-500">
-<div class="flex flex-col fixed top-8 right-4 gap-5">
+<div class="flex flex-col fixed md:top-8 top-18 right-6 md:right-4 gap-5">
   <button id="store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     STORE
   </button>
@@ -590,8 +655,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     INVENTORY
   </button>
 </div>
-<div id="full-body" class="w-150">
-  <div class="w-full p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700">
+<div id="full-body" class="w-96 md:w-148">
+  <div class="w-full p-6 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700">
     <header class="flex flex-col justify-center mb-8 w-full">
       <div>
         <h1 class="text-3xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
@@ -606,12 +671,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
     <div id="result-display" class="m-2 mb-8 p-5 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-80 grid grid-cols-[70%_30%] items-center justify-around text-center">
 
-    <div id="pull-display" class="m-8 ml-0 p-1 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-full flex items-center justify-center text-center">
-      Pull to Display...
-    </div>
-    <div id="pull-display-single" class="m-8 p-1 bg-slate-900 rounded-lg font-mono h-full text-cyan-300 flex justify-center items-center text-center">
-      IDLE
-    </div>
+        <div id="pull-display" class="m-8 ml-0 p-1 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-full flex items-center justify-center text-center">
+          Pull to Display...
+        </div>
+        <div id="pull-display-single" class="m-8 p-1 bg-slate-900 rounded-lg font-mono h-full text-cyan-300 flex justify-center items-center text-center">
+          IDLE
+        </div>
 
     </div>
 
@@ -628,12 +693,40 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
         Timer
       </button>
-      <button id="purchase" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
-        Purchase Coffee
-      </button>
     </div>
+
+
   </div>
+
+    <div id="dailies-hud" class="mt-2 w-full bg-slate-900/40 backdrop-blur-sm border border-slate-800 p-4 rounded-2xl hover:bg-slate-800/60 transition-all cursor-pointer group" onclick="openDailies()">
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-3">
+                <div class="relative">
+                    <div class="absolute inset-0 bg-emerald-500/20 blur-lg rounded-full animate-pulse"></div>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-emerald-400 relative" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-sm font-black text-slate-100 uppercase tracking-widest group-hover:text-emerald-400 transition-colors">Daily Progress</h3>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase">Reset in <span class="text-slate-400 font-mono">14:22:05</span></p>
+                </div>
+            </div>
+
+            <div class="text-right">
+                <span class="text-xl font-black text-emerald-400">0<span class="text-slate-600">/4</span></span>
+            </div>
+        </div>
+
+        <div class="flex gap-2 h-1.5 w-full">
+            <div class="flex-1 bg-slate-800 rounded-full"></div>
+            <div class="flex-1 bg-slate-800 rounded-full"></div>
+            <div class="flex-1 bg-slate-800 rounded-full"></div>
+            <div class="flex-1 bg-slate-800 rounded-full"></div>
+        </div>
+    </div>
 </div>
+
 </section>
 
 
@@ -653,7 +746,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         Verified Vouchers Only
     </span>
 </div>
-  <div id="boxes" class="w-full h-full content-start grid grid-cols-5 gap-6">
+  <div id="stock-boxes" class="w-full h-full content-start grid grid-cols-5 gap-6">
   </div>
 </section>
 
@@ -678,8 +771,83 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
 
 
-
 <div id="modaldiv"></div>
+
+
+
+<div id="dailies-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 hidden">
+    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
+
+    <div class="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+        <div>
+            <h2 class="text-2xl font-black text-emerald-400 uppercase tracking-tighter">Daily Operations</h2>
+            <p class="text-slate-400 text-sm italic">Status: <span id="sync-status" class="text-emerald-500/80">Synchronized</span></p>
+        </div>
+
+        <div class="flex items-center gap-3">
+            <button id="refresh-dailies" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 transition-all active:scale-90 border border-slate-700" title="Refresh Status">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+            </button>
+
+            <button onclick="closeDailies()" class="p-2 text-slate-500 hover:text-white transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+        <div class="p-4 space-y-3">
+            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 group">
+                <div class="max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic">Login</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">Establish connection to the Astrai network.</p>
+                </div>
+                <button id="daily1" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-emerald-600 text-slate-900 hover:bg-emerald-400 active:scale-95">Claim</button>
+            </div>
+
+            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <div class="max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic">Complete Preflight</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">Shower, dishes, maintenance, teeth. Clear mind and let go.</p>
+                </div>
+                <button disabled id="daily2" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+            </div>
+
+            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <div class="max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic">Blood & Hormones</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">20 burpees of 7 sets or until failure. Pump the system.</p>
+                </div>
+                <button disabled id="daily3" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+            </div>
+
+            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
+                <div class="max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic">Flux Expenditure</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">Channel 500 Flux through the extraction conduits.</p>
+                </div>
+                <button disabled id="daily4" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+            </div>
+        </div>
+
+        <div class="m-4 p-4 bg-emerald-950/20 border border-emerald-500/20 rounded-xl flex items-center justify-between">
+            <div>
+                <span class="text-[10px] text-emerald-500 font-black uppercase tracking-[0.2em]">Efficiency Bonus</span>
+                <p class="text-xs text-slate-300">Complete all daily tasks for extra rewards.</p>
+            </div>
+            <div class="flex gap-1">
+                <div class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"></div>
+                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
+                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
+                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
 `;
 
 // Event Listeners
@@ -705,7 +873,7 @@ document
 
 document
   .querySelector("#purchase")
-  ?.addEventListener("click", () => apiActionPurchase("/purchase", "coffee"));
+  ?.addEventListener("click", () => (window as any).purchase(5));
 
 document.querySelector("#stock")?.addEventListener("click", () =>
   apiActionGetVouchers("/get_user_vouchers", false, {
@@ -737,8 +905,93 @@ document.querySelector("#home-from-store")?.addEventListener("click", () => {
 
 async function runTask() {
   while (true) {
-    queryUserFunds("/user_funds_info", { userid: get_userid() });
-    await sleep(2000);
+    queryUserFunds();
+    await sleep(15000);
   }
 }
 runTask();
+
+// REFRESH LOGIC for DAILIES
+const refreshBtn = document.getElementById("refresh-dailies")!;
+const refreshIcon = refreshBtn.querySelector("svg")!;
+const syncStatus = document.getElementById("sync-status")!;
+
+refreshBtn.addEventListener("click", async () => {
+  // 1. Start the Spin
+  refreshIcon.classList.add("animate-spin", "text-emerald-400");
+  syncStatus.innerText = "Fetching...";
+  syncStatus.classList.replace("text-emerald-500/80", "text-amber-500");
+
+  await sleep(850);
+  try {
+    // 2. Call your Rust backend (Example)
+    // await apiFetchDailies();
+    let payload = { id: 255, info: true, userid: get_userid() };
+    let response = await fetch(`${API_BASE}/dailies`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const response_j = await response.json();
+    const dailies: Daily[] = response_j.dailies;
+
+    updateHUD(dailies);
+
+    let inc = 0;
+    dailies.forEach((daily) => {
+      inc++;
+      const button = document.getElementById(
+        `daily${inc}`,
+      )! as HTMLButtonElement;
+
+      if (daily.claimable && !daily.claimed) {
+        updateDailyButton(button, "ready");
+      } else if (!daily.claimable && daily.claimed) {
+        updateDailyButton(button, "claimed");
+      } else if (!daily.claimable && !daily.claimed) {
+        updateDailyButton(button, "locked");
+      }
+    });
+
+    // 3. Success state
+    syncStatus.innerText = "Synchronized";
+    syncStatus.classList.replace("text-amber-500", "text-emerald-500/80");
+  } catch (e) {
+    syncStatus.innerText = "Sync Failed";
+    syncStatus.classList.replace("text-amber-500", "text-red-500");
+  } finally {
+    // 4. Stop the Spin
+    refreshIcon.classList.remove("animate-spin");
+  }
+});
+
+(window as any).closeDailies = function closeDailies() {
+  document.getElementById("dailies-modal")!.classList.add("hidden");
+};
+
+(window as any).openDailies = function openDailies() {
+  document.getElementById("dailies-modal")!.classList.remove("hidden");
+  setTimeout(() => {
+    refreshBtn.click();
+  }, 50);
+};
+
+function updateHUD(dailies: Daily[]) {
+  const completedCount = dailies.filter((d) => d.claimed).length;
+
+  // Update the text counter (e.g., 2/4)
+  const counter = document.querySelector(".text-xl.font-black");
+  if (counter)
+    counter.innerHTML = `${completedCount}<span class="text-slate-600">/4</span>`;
+
+  // Update the visual "pips"
+  const pips = document.querySelectorAll(".flex.gap-2.h-1\\.5 > div");
+  pips.forEach((pip, index) => {
+    if (index < completedCount) {
+      pip.className =
+        "flex-1 bg-emerald-500 shadow-[0_0_8px_#10b981] rounded-full";
+    } else {
+      pip.className = "flex-1 bg-slate-800 rounded-full";
+    }
+  });
+}

@@ -271,9 +271,9 @@ impl SqliteRepo {
     }*/
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let init = true;
+        let init = false;
         let user = User {
-            id: UserId("axol999".to_string()),
+            id: UserId("testing".to_string()),
             astrum: 1600,
             astrai: 30,
             flux: 500,
@@ -289,7 +289,7 @@ impl SqliteRepo {
             total_pulls: 0,
             total_flux_aq: 0,
             total_astrum_aq: 0,
-            username: "Axol".to_string(),
+            username: "Test User".to_string(),
             vouchers: Vec::<Voucher>::new(),
             templates: Voucher::get_templates(),
         };
@@ -377,6 +377,7 @@ struct PullRequest {
 #[derive(Serialize)]
 struct PullResponse {
     result: SerializedRarity,
+    vouchers: u8,
 }
 impl TryFrom<&User> for PityCtx {
     type Error = PersistenceError;
@@ -409,8 +410,10 @@ fn quick_roll() -> u8 {
     let roll: u8 = rng.random();
     roll
 }
-fn apply_outcome(user: &mut User, outcome: &Rarities) {
+fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
     let mut vouchers: Vec<Voucher> = user.vouchers.clone();
+    let mut rw_vouchers: u8 = 0;
+
     match outcome {
         Rarities::MythicSSS => {
             user.sss_pity = 0;
@@ -421,6 +424,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
 
             if quick_roll() < 128 || user.has_slip {
                 vouchers.push(Voucher::mythic_week());
+                rw_vouchers += 1;
             } else {
                 vouchers.push(Voucher::gaming());
                 vouchers.push(Voucher::gaming());
@@ -430,6 +434,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                     vouchers.push(Voucher::coffee());
                     vouchers.push(Voucher::japanese());
                 }
+                rw_vouchers += 9;
                 user.has_slip = true;
             }
         }
@@ -449,6 +454,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                     true,
                     "Study Japanese for 3 Hours".into(),
                 ));
+                rw_vouchers += 1;
             } else {
                 vouchers.push(Voucher::new(
                     24,
@@ -458,6 +464,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                     true,
                     "Study Japanese for 1 Hour".into(),
                 ));
+                rw_vouchers += 1;
             }
             if quick_roll() < 85 {
                 vouchers.push(Voucher::new(
@@ -468,13 +475,16 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                     true,
                     "Permission Slip to Work on LifeGacha for 2 Hours".into(),
                 ));
+                rw_vouchers += 1;
             }
             if quick_roll() < 85 {
                 vouchers.push(Voucher::coffee());
+                rw_vouchers += 1;
             }
 
             if quick_roll() < 16 {
                 vouchers.push(Voucher::gaming());
+                rw_vouchers += 1;
             }
         }
         Rarities::A => {
@@ -493,6 +503,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
                 true,
                 "Take a 15 minute breather break".into(),
             ));
+            rw_vouchers += 1;
         }
         Rarities::B => {
             user.sss_pity += 1;
@@ -504,6 +515,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
 
             if quick_roll() == 24 {
                 vouchers.push(Voucher::gaming());
+                rw_vouchers += 1;
             }
         }
     }
@@ -513,9 +525,10 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
     user.total_pulls += 1;
     if user.astrai > 0 {
         user.astrai -= 1;
-        return;
+        return rw_vouchers;
     }
     user.astrum -= 160;
+    rw_vouchers
 }
 
 async fn handle_pull(
@@ -527,17 +540,19 @@ async fn handle_pull(
     if user.astrai < 1 && user.astrum < 160 {
         return Ok(Json(PullResponse {
             result: SerializedRarity::NoTickets,
+            vouchers: 0,
         }));
     }
 
     let pityctx = PityCtx::try_from(&user).unwrap();
     let outcome = roll(&pityctx);
 
-    apply_outcome(&mut user, &outcome);
+    let reward = apply_outcome(&mut user, &outcome);
     let _ = state.repo.save(&user, &conn);
 
     Ok(Json(PullResponse {
         result: SerializedRarity::try_from(outcome).unwrap(),
+        vouchers: reward,
     }))
 }
 fn gen_timer_id() -> String {
@@ -718,6 +733,7 @@ async fn purchase(
     let _ = state.repo.save(&user, &conn);
 
     Ok(Json(serde_json::json!({
+        "name": &req_voucher.name,
         "result": format!(
         "Purchased Item: {}",
         &req_voucher.name),
@@ -793,6 +809,9 @@ struct DailiesReq {
 #[derive(Serialize)]
 struct DailiesResp {
     dailies: Vec<Daily>,
+    astrum: u16,
+    flux: u16,
+    astrai: u16,
 }
 async fn dailies(
     State(state): State<AppState>,
@@ -800,6 +819,7 @@ async fn dailies(
 ) -> Result<Json<DailiesResp>, StatusCode> {
     let (mut user, conn) = load_user(req.userid.clone(), &state)?;
     let mut ok = false;
+    let (mut rw_astrum, mut rw_flux, mut rw_astrai) = (0, 0, 0);
 
     if req.info {
         for daily in user.dailies.iter_mut() {
@@ -826,6 +846,9 @@ async fn dailies(
         user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
         user.dailies[req.id as usize].claimed = true;
 
+        if req.id == 3 && user.todays_flux.1 < 500 {
+            return Err(StatusCode::FORBIDDEN);
+        }
         if req.id == 3 {
             user.todays_flux.1 = 0;
         }
@@ -834,17 +857,27 @@ async fn dailies(
             0 => {
                 user.astrum += 40;
                 user.astrai += 1;
+
+                rw_astrai += 1;
+                rw_astrum += 40;
             }
             1 => {
                 user.astrum += 40;
                 user.astrai += 2;
+
+                rw_astrum += 40;
+                rw_astrai += 2;
             }
             2 => {
                 user.astrum += 80;
                 user.flux += 75;
+
+                rw_astrum += 80;
+                rw_flux += 75;
             }
             3 => {
                 user.astrum += 80;
+                rw_astrum += 80;
             }
             _ => {
                 println!("This code will never run! Hehe")
@@ -860,6 +893,10 @@ async fn dailies(
         if !found_incomplete {
             user.astrum += 100;
             user.astrai += 2;
+
+            rw_astrum += 100;
+            rw_astrai += 2;
+            rw_flux += 100;
         }
 
         ok = true;
@@ -869,6 +906,9 @@ async fn dailies(
         let _ = state.repo.save(&user, &conn);
         return Ok(Json(DailiesResp {
             dailies: user.dailies.clone(),
+            astrum: rw_astrum,
+            flux: rw_flux,
+            astrai: rw_astrai,
         }));
     }
     Err(StatusCode::FORBIDDEN)
@@ -897,7 +937,7 @@ async fn remove_new_logo(
     State(state): State<AppState>,
     Json(req): Json<String>,
 ) -> Result<Json<String>, StatusCode> {
-    let (mut user, conn) = load_user("axol999".into(), &state)?;
+    let (mut user, conn) = load_user(get_username(), &state)?;
 
     if let Some(voucher) = user.vouchers.iter_mut().find(|f| f.uuid.to_string() == req) {
         voucher.new = false;
@@ -911,21 +951,27 @@ async fn remove_new_logo(
     Ok(Json("Flipped".into()))
 }
 
+fn get_username() -> String {
+    "axol999".to_string()
+}
+
 #[tokio::main]
 async fn main() {
     let repo = SqliteRepo::new("userdata.sql");
     let state = AppState { repo: repo.into() };
 
-    {
+    /*{
         let state_tmp = state.clone();
 
-        let (mut user, conn) = load_user("axol999".into(), &state_tmp).unwrap();
+        let (mut user, conn) = load_user(get_username(), &state_tmp).unwrap();
         user.vouchers.iter_mut().filter(|f| !f.new).for_each(|f| {
             f.new = true;
         });
 
+        user.dailies = Daily::init();
+
         let _ = state_tmp.repo.save(&user, &conn);
-    }
+    }*/
 
     let app = Router::new()
         .route("/start_timer", post(start_timer))

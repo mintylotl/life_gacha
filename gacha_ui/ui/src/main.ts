@@ -8,6 +8,191 @@ function get_userid() {
   return "axol999";
 }
 
+interface Reward {
+  reward_type: string;
+  amount: number | string;
+}
+
+class RewardManager {
+  private rewards: Reward[];
+  private id: string;
+  private modalEl: HTMLElement | null = null;
+
+  constructor(rewards: Reward[]) {
+    // Excellent sanity check to prevent empty/zero rewards
+    this.rewards = rewards.filter((f) => Number(f.amount) > 0);
+
+    console.log(this.rewards);
+    this.id = generateRandomString(6);
+
+    // Only render if there are actually rewards to show
+    if (this.rewards.length > 0) {
+      this.render();
+    }
+  }
+
+  // Updated currency colors for Golden Astrai, Fuchsia Astrum, and Blue Flux
+  private getStyles(type: string): {
+    container: string;
+    amount: string;
+    typeText: string;
+  } {
+    const themes: Record<
+      string,
+      { container: string; amount: string; typeText: string }
+    > = {
+      Astrai: {
+        container: "bg-amber-500/10 border-amber-500/30",
+        amount: "text-amber-400",
+        typeText: "text-amber-500", // Premium Golden
+      },
+      Astrum: {
+        container: "bg-fuchsia-500/10 border-fuchsia-500/30",
+        amount: "text-fuchsia-400",
+        typeText: "text-fuchsia-500", // Purple/Fuchsia
+      },
+      Flux: {
+        container: "bg-blue-500/10 border-blue-500/30",
+        amount: "text-blue-400",
+        typeText: "text-blue-500", // Gacha duplicate blue
+      },
+      Voucher: {
+        container: "bg-emerald-500/10 border-emerald-500/30",
+        amount: "text-emerald-400",
+        typeText: "text-emerald-500",
+      },
+    };
+
+    return (
+      themes[type] || {
+        container: "bg-slate-900/50 border-slate-700/50",
+        amount: "text-slate-400",
+        typeText: "text-slate-500",
+      }
+    );
+  }
+
+  // Cascading theme logic: Modal matches the highest-tier item received
+  private getModalTheme(): {
+    border: string;
+    shadow: string;
+    iconBg: string;
+    btnBg: string;
+    btnShadow: string;
+  } {
+    const hasVoucher = this.rewards.some((r) => r.reward_type === "Voucher");
+    const hasAstrai = this.rewards.some((r) => r.reward_type === "Astrai");
+    const hasAstrum = this.rewards.some((r) => r.reward_type === "Astrum");
+
+    if (hasVoucher) {
+      return {
+        border: "border-emerald-500/50",
+        shadow: "shadow-[0_0_50px_rgba(16,185,129,0.2)]",
+        iconBg: "bg-emerald-500 shadow-emerald-500/40",
+        btnBg: "bg-emerald-600 hover:bg-emerald-500",
+        btnShadow: "shadow-emerald-900/40",
+      };
+    }
+
+    if (hasAstrai) {
+      return {
+        border: "border-amber-500/50",
+        shadow: "shadow-[0_0_50px_rgba(245,158,11,0.2)]",
+        iconBg: "bg-amber-500 shadow-amber-500/40",
+        btnBg: "bg-amber-500 hover:bg-amber-400",
+        btnShadow: "shadow-amber-900/40 text-slate-900", // Keeps text dark for contrast on gold
+      };
+    }
+
+    if (hasAstrum) {
+      return {
+        border: "border-fuchsia-500/50",
+        shadow: "shadow-[0_0_50px_rgba(217,70,239,0.2)]",
+        iconBg: "bg-fuchsia-500 shadow-fuchsia-500/40",
+        btnBg: "bg-fuchsia-600 hover:bg-fuchsia-500",
+        btnShadow: "shadow-fuchsia-900/40",
+      };
+    }
+
+    // Default theme (Flux / Blue)
+    return {
+      border: "border-blue-500/40",
+      shadow: "shadow-[0_0_40px_rgba(59,130,246,0.15)]",
+      iconBg: "bg-blue-500 shadow-blue-500/40",
+      btnBg: "bg-blue-600 hover:bg-blue-500",
+      btnShadow: "shadow-blue-900/40",
+    };
+  }
+
+  private render(): void {
+    const theme = this.getModalTheme();
+
+    const listItems = this.rewards
+      .map((r) => {
+        const style = this.getStyles(r.reward_type);
+        return `
+          <div class="p-4 rounded-2xl border ${style.container}">
+              <span class="block text-4xl font-mono font-black ${style.amount}">${r.amount}</span>
+              <span class="block text-xs font-bold uppercase tracking-widest mt-1 ${style.typeText}">${r.reward_type}</span>
+          </div>
+        `;
+      })
+      .join("");
+
+    const modalHtml = `
+      <div id="reward-modal-${this.id}" class="fixed inset-0 z-[100] flex items-center justify-center transition-opacity duration-300 bg-slate-900/90 backdrop-blur-md opacity-0">
+          <div id="container-${this.id}" class="relative w-full max-w-sm p-8 mx-4 text-center transform scale-90 transition-transform duration-300 bg-slate-800 border-2 ${theme.border} rounded-3xl ${theme.shadow}">
+
+              <div class="absolute inset-x-0 top-0 -translate-y-1/2 flex justify-center">
+                  <div class="${theme.iconBg} p-4 rounded-2xl shadow-lg animate-bounce">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-slate-900" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-7.714 2.143L11 21l-2.286-6.857L1 12l7.714-2.143L11 3z" />
+                      </svg>
+                  </div>
+              </div>
+
+              <h2 class="mt-8 text-3xl font-black text-white tracking-tighter uppercase">Reward Claimed!</h2>
+              <p class="mt-2 text-slate-400 font-medium">You have successfully received:</p>
+
+              <div class="my-6 space-y-3">
+                  ${listItems}
+              </div>
+
+              <button id="btn-${this.id}" class="w-full py-4 ${theme.btnBg} text-slate-900 font-black rounded-xl active:scale-95 transition-all shadow-lg ${theme.btnShadow}">
+                  CONFIRM & CONTINUE
+              </button>
+          </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML("beforeend", modalHtml);
+    this.modalEl = document.getElementById(`reward-modal-${this.id}`);
+
+    document
+      .getElementById(`btn-${this.id}`)
+      ?.addEventListener("click", () => this.destroy());
+
+    requestAnimationFrame(() => {
+      this.modalEl?.classList.remove("opacity-0");
+      const container = document.getElementById(`container-${this.id}`);
+      container?.classList.replace("scale-90", "scale-100");
+    });
+  }
+
+  public destroy(): void {
+    if (!this.modalEl) return;
+
+    this.modalEl.classList.add("opacity-0");
+    const container = document.getElementById(`container-${this.id}`);
+    container?.classList.replace("scale-100", "scale-95");
+
+    setTimeout(() => {
+      this.modalEl?.remove();
+      this.modalEl = null;
+    }, 300);
+  }
+}
+
 interface Daily {
   id: number;
   claimable: boolean;
@@ -16,7 +201,7 @@ interface Daily {
 }
 
 // Logic to update the button UI
-function updateDailyButton(buttonEl: HTMLButtonElement, status: string) {
+async function updateDailyButton(buttonEl: HTMLButtonElement, status: string) {
   if (status === "ready") {
     buttonEl.disabled = false;
     buttonEl.innerText = "Claim";
@@ -288,47 +473,45 @@ async function apiActionGetVouchers(
         }
 
         const voucherHTML = `
-            <div class="relative" class="voucher-box">
-
-            ${is_new}
-
-            <div id="${voucher.uuid}" class="group relative flex flex-col bg-slate-700/50 backdrop-blur-sm rounded-2xl shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 transition-all duration-300 h-[400px] border border-slate-600 overflow-hidden">
-            <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"></div>
-            <div class="p-6 flex-1 flex flex-col">
-            <div class="flex justify-between items-start mb-4">
-            <h2 class="text-xl font-bold text-slate-100 tracking-tight leading-tight uppercase group-hover:text-emerald-400 transition-colors">
+  <div class="relative voucher-box w-full">
+    ${is_new}
+    <div id="${voucher.uuid}" class="group relative flex flex-col bg-slate-700/50 backdrop-blur-sm rounded-2xl shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 transition-all duration-300 h-auto min-h-[350px] md:h-[400px] border border-slate-600 overflow-hidden">
+      <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] shrink-0"></div>
+      <div class="p-5 md:p-6 flex-1 flex flex-col h-full">
+        <div class="flex justify-between items-start mb-3 md:mb-4">
+          <h2 class="text-lg md:text-xl font-bold text-slate-100 tracking-tight leading-tight uppercase group-hover:text-emerald-400 transition-colors line-clamp-2">
             ${voucher.name}
-            </h2>
-            <span class="bg-slate-800 text-slate-400 text-[9px] font-mono py-1 px-2 rounded border border-slate-600">
+          </h2>
+          <span class="bg-slate-800 text-slate-400 text-[9px] font-mono py-1 px-2 rounded border border-slate-600 shrink-0 ml-2">
             #${voucher.id}
-            </span>
-            </div>
+          </span>
+        </div>
 
-            <div class="mb-4">
-            <span class="text-4xl font-black text-emerald-400 font-mono">${voucher.cost}</span>
-            <span class="text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">credits</span>
-            </div>
+        <div class="mb-3 md:mb-4">
+          <span class="text-3xl md:text-4xl font-black text-emerald-400 font-mono">${voucher.cost}</span>
+          <span class="text-[10px] md:text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">credits</span>
+        </div>
 
-            <p class="text-slate-400 leading-relaxed text-sm flex-1 overflow-hidden italic">
-            "${voucher.description}"
-            </p>
+        <p class="text-slate-400 leading-relaxed text-xs md:text-sm flex-1 overflow-y-auto md:overflow-hidden italic">
+          "${voucher.description}"
+        </p>
 
-            <div class="mt-4 pt-4 border-t border-slate-600/50">
-            <p class="text-[10px] text-slate-500 font-mono truncate opacity-60">
+        <div class="mt-auto pt-3 md:pt-4 border-t border-slate-600/50">
+          <p class="text-[9px] md:text-[10px] text-slate-500 font-mono truncate opacity-60">
             UUID: ${voucher.uuid}
-            </p>
-            </div>
+          </p>
+        </div>
 
-            <button ${buttonPrefix} class="mt-4 w-full bg-emerald-600 text-slate-900 font-black py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
-            <span>REDEEM VOUCHER</span>
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+        <button ${buttonPrefix} class="mt-3 md:mt-4 w-full bg-emerald-600 text-slate-900 font-black py-2.5 md:py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
+          <span class="text-sm md:text-base">REDEEM</span>
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd" />
-            </svg>
-            </button>
-            </div>
-            </div>
-            </div>
-          `;
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+`;
 
         boxes.insertAdjacentHTML("beforeend", voucherHTML);
         if (voucher.new) {
@@ -389,6 +572,8 @@ async function flip_new(uuid: string) {
       display.innerHTML = `<div class="text-cyan-400">${data.result}</div>`;
     }
     queryUserFunds();
+
+    new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
   } catch (err) {
     console.log(err);
     display!.innerHTML = `<div class="text-cyan-400">Error: Insufficient Funds</div>`;
@@ -408,6 +593,9 @@ async function apiActionPull10(path: string) {
 
   let [mythic, s, a, b] = [0, 0, 0, 0];
   let flux = 0;
+  let vouchers = 0;
+  let tup_result: RewardTup = { result: "", vouchers: 0 };
+
   try {
     if (display) {
       display.innerHTML = `
@@ -421,8 +609,10 @@ async function apiActionPull10(path: string) {
         </div>`;
 
       for (let i = 0; i < 10; i++) {
-        const result = await apiActionPull(path, [25, 576]);
-        if (result === "NoTickets") {
+        tup_result = await apiActionPull(path, [25, 250]);
+        vouchers = vouchers + Number(tup_result.vouchers);
+
+        if (tup_result.result === "NoTickets") {
           const button = document.getElementById(
             "pull10-btn",
           ) as HTMLButtonElement;
@@ -434,7 +624,7 @@ async function apiActionPull10(path: string) {
           `;
           return;
         }
-        if (result === "Mythic") {
+        if (tup_result.result === "Mythic") {
           mythic += 1;
           flux += 2400;
 
@@ -446,7 +636,7 @@ async function apiActionPull10(path: string) {
           </div>
           </div>`;
           await sleep(8000);
-        } else if (result === "S") {
+        } else if (tup_result.result === "S") {
           s += 1;
           flux += 360;
 
@@ -458,7 +648,7 @@ async function apiActionPull10(path: string) {
           </div>
           </div>`;
           await sleep(2000);
-        } else if (result === "A") {
+        } else if (tup_result.result === "A") {
           a += 1;
           flux += 120;
 
@@ -509,8 +699,9 @@ async function apiActionPull10(path: string) {
         .querySelector("#pull10-btn")
         ?.addEventListener("click", () => apiActionPull10("/pull"));
 
-      let modal: RewardManager = new RewardManager([
+      new RewardManager([
         { reward_type: "Flux", amount: flux },
+        { reward_type: "Voucher", amount: vouchers },
       ]);
     }, 500);
   } catch (err) {
@@ -520,7 +711,14 @@ async function apiActionPull10(path: string) {
   }
 }
 
-async function apiActionPull(path: string, delay: number[]) {
+interface RewardTup {
+  result: string;
+  vouchers: number;
+}
+async function apiActionPull(
+  path: string,
+  delay: number[],
+): Promise<RewardTup> {
   const display = document.getElementById("pull-display-single");
 
   let payload = { userid: get_userid() };
@@ -530,7 +728,7 @@ async function apiActionPull(path: string, delay: number[]) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
+    const data: RewardTup = await response.json();
 
     const [delay_l, delay_r] = delay;
     if (display) {
@@ -585,11 +783,13 @@ async function apiActionPull(path: string, delay: number[]) {
       }
     }
     queryUserFunds();
-    return data.result;
+    return { result: data.result, vouchers: data.vouchers };
   } catch (err) {
     if (display) display.innerText = "Error: Server Offline";
     console.log(err);
   }
+
+  return { result: "NoTickets", vouchers: 0 };
 }
 
 interface TimerRequest {
@@ -743,206 +943,200 @@ const modaldivcontent = `
 `;
 
 // MAIN CONTENT
-document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-<section id="home-page" class="transition-opacity duration-500">
-<div class="flex flex-col fixed md:top-8 top-18 right-6 md:right-4 gap-5">
-  <button id="store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+// MAIN CONTENT
+document.querySelector("#app")!.innerHTML = `
+<section id="home-page" class="transition-opacity duration-500 flex justify-center w-full px-4 md:px-0 min-w-[400px] ">
+<div class="flex flex-row md:flex-col fixed top-4 md:top-8 right-4 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
+  <button id="store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     STORE
   </button>
-  <button id="stock" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+  <button id="stock" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     INVENTORY
   </button>
 </div>
-<div id="full-body" class="w-96 md:w-148">
-  <div class="w-full p-6 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700">
-    <header class="flex flex-col justify-center mb-8 w-full">
+
+<div id="full-body" class="w-full sm:w-96 md:w-148 mt-20 md:mt-0">
+  <div class="w-full p-4 md:p-6 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700">
+    <header class="flex flex-col justify-center mb-6 md:mb-8 w-full">
       <div>
-        <h1 class="text-3xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
+        <h1 class="text-2xl md:text-3xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
           LIFE GACHA
         </h1>
-        <h1 class="text-3sm font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
+        <h1 class="text-xl md:text-3sm font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
           Axol
         </h1>
       </div>
-      <p id="user-funds-display" class="text-slate-400 text-sm mt-1 uppercase tracking-widest">Funds: 0</p>
+      <p id="user-funds-display" class="text-slate-400 text-xs md:text-sm mt-1 uppercase tracking-widest">Funds: 0</p>
     </header>
 
-    <div id="result-display" class="m-2 mb-8 p-5 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-80 grid grid-cols-[70%_30%] items-center justify-around text-center">
-
-        <div id="pull-display" class="m-8 ml-0 p-1 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-full flex items-center justify-center text-center">
+    <div id="result-display" class="m-0 md:m-2 mb-6 md:mb-8 p-3 md:p-5 bg-slate-900 rounded-lg border border-slate-700 font-mono text-cyan-300 h-64 md:h-80 grid grid-cols-1 md:grid-cols-[70%_30%] gap-4 md:gap-0 items-center justify-around text-center">
+        <div id="pull-display" class="m-0 md:m-8 md:ml-0 p-1 bg-slate-900 rounded-lg border border-slate-700 font-mono min-w-[100px] text-cyan-300 h-full flex items-center justify-center text-center text-sm md:text-base">
           Pull to Display...
         </div>
-        <div id="pull-display-single" class="m-8 p-1 bg-slate-900 rounded-lg font-mono h-full text-cyan-300 flex justify-center items-center text-center">
+        <div id="pull-display-single" class="m-0 md:m-8 p-1 bg-slate-900 rounded-lg font-mono h-full text-cyan-300 flex justify-center items-center text-center text-sm md:text-base">
           IDLE
         </div>
-
     </div>
 
-    <div class="grid grid-cols-2 gap-4">
-      <button id="pull-btn" class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4">
+      <button id="pull-btn" class="w-full py-3 md:py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
         Pull
       </button>
-      <button id="pull10-btn" class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
+      <button id="pull10-btn" class="w-full py-3 md:py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
         Pull x10
       </button>
-      <button id="timer-btn-stop" class="w-full py-4 bg-red-600 hover:bg-red-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+      <button id="timer-btn-stop" class="w-full py-3 md:py-4 bg-red-600 hover:bg-red-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-lg shadow-emerald-500/20">
         Stop Timer
       </button>
-      <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+      <button id="timer-btn" class="w-full py-3 md:py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-lg shadow-emerald-500/20">
         Timer
       </button>
     </div>
-
-
   </div>
 
-    <div id="dailies-hud" class="mt-2 w-full bg-slate-900/40 backdrop-blur-sm border border-slate-800 p-4 rounded-2xl hover:bg-slate-800/60 transition-all cursor-pointer group" onclick="openDailies()">
-        <div class="flex items-center justify-between mb-3">
-            <div class="flex items-center gap-3">
-                <div class="relative">
-                    <div class="absolute inset-0 bg-emerald-500/20 blur-lg rounded-full animate-pulse"></div>
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-emerald-400 relative" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                    </svg>
-                </div>
-                <div>
-                    <h3 class="text-sm font-black text-slate-100 uppercase tracking-widest group-hover:text-emerald-400 transition-colors">Daily Progress</h3>
-                    <p class="text-[10px] text-slate-500 font-bold uppercase">Reset in <span class="text-slate-400 font-mono">14:22:05</span></p>
-                </div>
-            </div>
 
-            <div class="text-right">
-                <span class="text-xl font-black text-emerald-400">0<span class="text-slate-600">/4</span></span>
+<div id="dailies-hud" class="mt-4 w-full bg-slate-900/40 backdrop-blur-sm border border-slate-800 p-4 rounded-2xl hover:bg-slate-800/60 transition-all cursor-pointer group" onclick="openDailies()">
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-3">
+            <div class="relative hidden sm:block">
+                <div class="absolute inset-0 bg-emerald-500/20 blur-lg rounded-full animate-pulse"></div>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-emerald-400 relative" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+            </div>
+            <div>
+                <h3 class="text-xs md:text-sm font-black text-slate-100 uppercase tracking-widest group-hover:text-emerald-400 transition-colors">
+                    Daily Progress
+                </h3>
+                <p class="text-[10px] text-slate-500 font-bold uppercase">
+                    Reset in <span class="text-slate-400 font-mono">14:22:05</span>
+                </p>
             </div>
         </div>
 
-        <div class="flex gap-2 h-1.5 w-full">
-            <div class="flex-1 bg-slate-800 rounded-full"></div>
-            <div class="flex-1 bg-slate-800 rounded-full"></div>
-            <div class="flex-1 bg-slate-800 rounded-full"></div>
-            <div class="flex-1 bg-slate-800 rounded-full"></div>
+        <div class="text-right">
+            <span id="dailies-count" class="text-lg md:text-xl font-black text-emerald-400">
+                0<span class="text-slate-600">/4</span>
+            </span>
         </div>
     </div>
-</div>
 
+    <div id="dailies-pips" class="flex gap-1 md:gap-2 h-1.5 w-full">
+        <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
+        <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
+        <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
+        <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
+    </div>
+</div>
+</div>
 </section>
 
-
-
-<section id="stock-page" class="w-[calc(100vw-600px)] h-screen hidden opacity-0 transition-opacity duration-200">
-<div class="flex items-center justify-between mb-8 p-2 border-b border-slate-700">
-    <div class="flex items-center gap-3 m-6">
-        <div class="w-3 h-8 bg-emerald-500 rounded-full"></div>
-        <h1 class="text-2xl font-black text-white tracking-widest font-mono">INVENTORY</h1>
+<section id="stock-page" class="w-screen h-screen hidden opacity-0 transition-opacity duration-200 overflow-y-auto overflow-x-hidden custom-scrollbar pb-24 px-6 md:px-12">
+<div class="max-w-[1800px] mx-auto lg:px-45">
+<div class="flex flex-col md:flex-row md:items-center justify-between mb-4 md:mb-8 p-2 border-b border-slate-700">
+    <div class="flex items-center gap-3 mt-16 md:mt-6 mb-2 md:mb-6 md:m-6">
+        <div class="w-2 md:w-3 h-6 md:h-8 bg-emerald-500 rounded-full"></div>
+        <h1 class="text-xl md:text-2xl font-black text-white tracking-widest font-mono">INVENTORY</h1>
     </div>
-<div class="flex flex-col fixed top-8 right-4 gap-5">
-  <button id="home" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
-    HOME
-  </button>
-</div>
-    <span class="text-slate-400 font-mono text-xs uppercase tracking-tighter">
+    <div class="flex flex-row md:flex-col fixed top-2 md:top-8 right-2 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
+      <button id="home" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+        HOME
+      </button>
+    </div>
+    <span class="text-slate-400 font-mono text-[10px] md:text-xs uppercase tracking-tighter">
         Verified Vouchers Only
     </span>
 </div>
-  <div id="stock-boxes" class="w-full h-full content-start grid grid-cols-5 gap-6">
+<div id="stock-boxes" class="w-full h-full content-start grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6">
   </div>
+</div>
 </section>
 
-<section id="store-page" class="w-[calc(100vw-600px)] h-screen hidden opacity-0 transition-opacity duration-200">
-<div class="flex items-center justify-between mb-8 p-2 border-b border-slate-700">
-    <div class="flex items-center gap-3 m-6">
-        <div class="w-3 h-8 bg-emerald-500 rounded-full"></div>
-        <h1 class="text-2xl font-black text-white tracking-widest font-mono">STORE</h1>
+
+<section id="store-page" class="w-screen h-screen hidden opacity-0 transition-opacity duration-200 overflow-y-auto overflow-x-hidden custom-scrollbar pb-24 px-6 md:px-12">
+<div class="max-w-[1800px] mx-auto lg:px-45">
+<div class="flex flex-col md:flex-row md:items-center justify-between mb-4 md:mb-8 p-2 border-b border-slate-700">
+    <div class="flex items-center gap-3 mt-16 md:mt-6 mb-2 md:mb-6 md:m-6">
+        <div class="w-2 md:w-3 h-6 md:h-8 bg-emerald-500 rounded-full"></div>
+        <h1 class="text-xl md:text-2xl font-black text-white tracking-widest font-mono">STORE</h1>
     </div>
-</div>
-<div class="flex flex-col fixed top-8 right-4 gap-5">
-      <button id="home-from-store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    <div class="flex flex-row md:flex-col fixed top-2 md:top-8 right-2 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
+      <button id="home-from-store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         HOME
       </button>
-      <button id="create" class="mt-4 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-8 bg-slate-800 rounded-2xl shadow-2xl border border-slate-700 right-4 w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+      <button id="create" class="md:mt-4 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         CREATE
       </button>
+    </div>
 </div>
-  <div id="store-boxes" class="w-full h-full content-start grid grid-cols-5 gap-6">
+<div id="store-boxes" class="w-full h-full content-start grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6">
   </div>
+</div>
 </section>
-
-
 
 <div id="modaldiv"></div>
 
-
-
-<div id="dailies-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 hidden">
-    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
-
-    <div class="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+<div id="dailies-modal" class="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/90 backdrop-blur-md p-2 md:p-4 hidden overflow-y-auto">
+    <div class="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden my-auto">
+    <div class="p-4 md:p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
         <div>
-            <h2 class="text-2xl font-black text-emerald-400 uppercase tracking-tighter">Daily Operations</h2>
-            <p class="text-slate-400 text-sm italic">Status: <span id="sync-status" class="text-emerald-500/80">Synchronized</span></p>
+            <h2 class="text-xl md:text-2xl font-black text-emerald-400 uppercase tracking-tighter">Daily Operations</h2>
+            <p class="text-slate-400 text-xs md:text-sm italic">Status: <span id="sync-status" class="text-emerald-500/80">Synchronized</span></p>
         </div>
 
-        <div class="flex items-center gap-3">
-            <button id="refresh-dailies" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 transition-all active:scale-90 border border-slate-700" title="Refresh Status">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div class="flex items-center gap-2 md:gap-3">
+            <button id="refresh-dailies" class="p-1.5 md:p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-400 transition-all active:scale-90 border border-slate-700" title="Refresh Status">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
             </button>
-
-            <button onclick="closeDailies()" class="p-2 text-slate-500 hover:text-white transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button onclick="closeDailies()" class="p-1 md:p-2 text-slate-500 hover:text-white transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 md:h-8 md:w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
             </button>
         </div>
     </div>
 
-        <div class="p-4 space-y-3">
-            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 group">
-                <div class="max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic">Login</h3>
-                    <p class="text-xs text-slate-400 leading-relaxed">Establish connection to the Astrai network.</p>
+        <div class="p-2 md:p-4 space-y-2 md:space-y-3">
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 group gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Login</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Establish connection to the Astrai network.</p>
                 </div>
-                <button id="dailyA" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-emerald-600 text-slate-900 hover:bg-emerald-400 active:scale-95">Claim</button>
+                <button id="dailyA" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-emerald-600 text-slate-900 hover:bg-emerald-400 active:scale-95">Claim</button>
             </div>
 
-            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <div class="max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic">Complete Preflight</h3>
-                    <p class="text-xs text-slate-400 leading-relaxed">Shower, dishes, maintenance, teeth. Clear mind and let go.</p>
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Complete Preflight</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Shower, dishes, maintenance, teeth. Clear mind and let go.</p>
                 </div>
-                <button disabled id="dailyB" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+                <button disabled id="dailyB" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
 
-            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <div class="max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic">Blood & Hormones</h3>
-                    <p class="text-xs text-slate-400 leading-relaxed">20 burpees of 7 sets or until failure. Pump the system.</p>
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Blood & Hormones</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">20 burpees of 7 sets or until failure. Pump the system.</p>
                 </div>
-                <button disabled id="dailyC" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+                <button disabled id="dailyC" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
 
-            <div class="daily-row flex items-center justify-between p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                <div class="max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic">Flux Expenditure</h3>
-                    <p class="text-xs text-slate-400 leading-relaxed">Channel 500 Flux through the extraction conduits.</p>
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Flux Expenditure</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Channel 500 Flux through the extraction conduits.</p>
                 </div>
-                <button disabled id="dailyD" class="claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+                <button disabled id="dailyD" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
         </div>
 
-        <div class="m-4 p-4 bg-emerald-950/20 border border-emerald-500/20 rounded-xl flex items-center justify-between">
+<button id="dailies-claimall" class="m-2 md:m-4 p-3 md:p-4 bg-slate-800/50 border border-emerald-500/20 rounded-lg flex transition-all items-center justify-center active:scale-95 hover:bg-slate-700/50">
             <div>
-                <span class="text-[10px] text-emerald-500 font-black uppercase tracking-[0.2em]">Efficiency Bonus</span>
-                <p class="text-xs text-slate-300">Complete all daily tasks for extra rewards.</p>
+                <span class="text-sm md:text-3sm text-emerald-500 font-black uppercase tracking-[0.2em]">CLAIM ALL</span>
             </div>
-            <div class="flex gap-1">
-                <div class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]"></div>
-                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
-                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
-                <div class="w-2 h-2 rounded-full bg-slate-700"></div>
-            </div>
-        </div>
+</button>
     </div>
 </div>
 
@@ -998,6 +1192,65 @@ document.querySelector("#home-from-store")?.addEventListener("click", () => {
   goHome(true);
 });
 
+document
+  .querySelector("#dailies-claimall")
+  ?.addEventListener("click", async () => {
+    let astrai = 0;
+    let astrum = 0;
+    let flux = 0;
+
+    let buttons = document.querySelectorAll(".claim-btn")!;
+    const refreshbtn = document.getElementById("refresh-dailies");
+
+    for (const button of buttons) {
+      try {
+        let arr = [0, 1, 2, 3];
+
+        for (const idx of arr) {
+          let payload = { userid: get_userid(), id: idx, info: false };
+          let response = await fetch(`${API_BASE}/dailies`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.ok && button) {
+            await updateDailyButton(button as HTMLButtonElement, "claimed");
+
+            let data: DailiesReward = await response.json();
+            astrum += data.astrum;
+            astrai += data.astrai;
+            flux += data.flux;
+          }
+
+          refreshBtn.click();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    setTimeout(() => {
+      updateHUD();
+    }, 500);
+
+    refreshBtn.click();
+
+    new RewardManager([
+      {
+        reward_type: "Astrum",
+        amount: astrum,
+      },
+      {
+        reward_type: "Astrai",
+        amount: astrai,
+      },
+      {
+        reward_type: "Flux",
+        amount: flux,
+      },
+    ]);
+  });
 class RewardModal {
   private el: HTMLElement;
   public id: string;
@@ -1080,6 +1333,12 @@ async function makeRewardModal(): Promise<RewardModal> {
   );
 }
 
+interface DailiesReward {
+  dailies: Daily[];
+  astrum: number;
+  astrai: number;
+  flux: number;
+}
 async function prepareDailies() {
   let dailiesArr = ["dailyA", "dailyB", "dailyC", "dailyD"];
 
@@ -1109,9 +1368,25 @@ async function prepareDailies() {
         });
 
         if (response.ok && button_daily) {
-          updateDailyButton(button_daily, "claimed");
-
+          await updateDailyButton(button_daily, "claimed");
           updateHUD();
+
+          let data: DailiesReward = await response.json();
+
+          new RewardManager([
+            {
+              reward_type: "Astrum",
+              amount: data.astrum,
+            },
+            {
+              reward_type: "Astrai",
+              amount: data.astrai,
+            },
+            {
+              reward_type: "Flux",
+              amount: data.flux,
+            },
+          ]);
         } else {
           console.error("Error while claiming daily!");
         }
@@ -1122,14 +1397,23 @@ async function prepareDailies() {
   });
 }
 
-interface Reward {
-  reward_type: "Astrum" | "Flux" | "Astrai" | "Voucher" | string;
-  amount: string | number;
-}
-
 async function runTask() {
   while (true) {
     queryUserFunds();
+
+    setTimeout(() => {
+      while (true) {
+        const refreshbtn: HTMLButtonElement = document.querySelector(
+          "#refresh-dailies",
+        ) as HTMLButtonElement;
+
+        if (refreshbtn) {
+          refreshbtn.click();
+          break;
+        }
+      }
+    }, 200);
+
     await sleep(15000);
   }
 }
@@ -1141,15 +1425,12 @@ const refreshIcon = refreshBtn.querySelector("svg")!;
 const syncStatus = document.getElementById("sync-status")!;
 
 refreshBtn.addEventListener("click", async () => {
-  // 1. Start the Spin
   refreshIcon.classList.add("animate-spin", "text-emerald-400");
   syncStatus.innerText = "Fetching...";
   syncStatus.classList.replace("text-emerald-500/80", "text-amber-500");
 
   await sleep(550);
   try {
-    // 2. Call your Rust backend (Example)
-    // await apiFetchDailies();
     let payload = { id: 255, info: true, userid: get_userid() };
     let response = await fetch(`${API_BASE}/dailies`, {
       method: "POST",
@@ -1217,18 +1498,19 @@ async function updateHUD() {
 
   const dailies_json = await dailies_f.json();
   const dailies: Daily[] = dailies_json.dailies;
-
   const completedCount = dailies.filter((d) => d.claimed).length;
 
-  // Update the text counter (e.g., 2/4)
-  const counter = document.querySelector(".text-xl.font-black");
-  if (counter)
+  // 1. Target by ID instead of generic classes
+  const counter = document.getElementById("dailies-count");
+  if (counter) {
     counter.innerHTML = `${completedCount}<span class="text-slate-600">/4</span>`;
+  }
 
-  // Update the visual "pips"
-  const pips = document.querySelectorAll(".flex.gap-2.h-1\\.5 > div");
+  // 2. Target pips specifically within the container ID
+  const pips = document.querySelectorAll("#dailies-pips > div");
   pips.forEach((pip, index) => {
     if (index < completedCount) {
+      // Use classList.add/remove or a clean string to preserve layout
       pip.className =
         "flex-1 bg-emerald-500 shadow-[0_0_8px_#10b981] rounded-full";
     } else {
@@ -1279,165 +1561,3 @@ function showReward(id: string, reward_type: string, amount: string) {
     modal.classList.add("hidden");
   }, 300);
 };
-
-// Assuming this interface exists in your codebase
-interface Reward {
-  reward_type: string;
-  amount: number | string;
-}
-
-class RewardManager {
-  private rewards: Reward[];
-  private id: string;
-  private modalEl: HTMLElement | null = null;
-
-  constructor(rewards: Reward[]) {
-    this.rewards = rewards;
-    this.id = generateRandomString(6);
-    this.render();
-  }
-
-  // Updated to return an object to style the new multi-layered elements
-  private getStyles(type: string): {
-    container: string;
-    amount: string;
-    typeText: string;
-  } {
-    const themes: Record<
-      string,
-      { container: string; amount: string; typeText: string }
-    > = {
-      Astrum: {
-        container: "bg-cyan-500/10 border-cyan-500/30",
-        amount: "text-cyan-400",
-        typeText: "text-cyan-600",
-      },
-      Flux: {
-        container: "bg-indigo-500/10 border-indigo-500/30",
-        amount: "text-indigo-400",
-        typeText: "text-indigo-500",
-      },
-      Astrai: {
-        container: "bg-fuchsia-500/10 border-fuchsia-500/30",
-        amount: "text-fuchsia-400",
-        typeText: "text-fuchsia-600",
-      },
-      Voucher: {
-        container: "bg-emerald-500/10 border-emerald-500/30",
-        amount: "text-emerald-400",
-        typeText: "text-emerald-600",
-      },
-    };
-
-    return (
-      themes[type] || {
-        container: "bg-slate-900/50 border-slate-700/50",
-        amount: "text-slate-400",
-        typeText: "text-slate-500",
-      }
-    );
-  }
-
-  // Determines the overall theme for the modal's outer elements (icon, button, border)
-  private getModalTheme(): {
-    border: string;
-    shadow: string;
-    iconBg: string;
-    btnBg: string;
-    btnShadow: string;
-  } {
-    const hasVoucher = this.rewards.some((r) => r.reward_type === "Voucher");
-
-    if (hasVoucher) {
-      return {
-        border: "border-emerald-500/50",
-        shadow: "shadow-[0_0_50px_rgba(16,185,129,0.2)]",
-        iconBg: "bg-emerald-500 shadow-emerald-500/40",
-        btnBg: "bg-emerald-600 hover:bg-emerald-500",
-        btnShadow: "shadow-emerald-900/40",
-      };
-    }
-
-    // Default theme if no voucher is present (using a neutral/cyan vibe as fallback)
-    return {
-      border: "border-cyan-500/40",
-      shadow: "shadow-[0_0_40px_rgba(6,182,212,0.15)]",
-      iconBg: "bg-cyan-500 shadow-cyan-500/40",
-      btnBg: "bg-cyan-600 hover:bg-cyan-500",
-      btnShadow: "shadow-cyan-900/40",
-    };
-  }
-
-  private render(): void {
-    const theme = this.getModalTheme();
-
-    // Map through the array of rewards and apply the specific styles for the new layout
-    const listItems = this.rewards
-      .map((r) => {
-        const style = this.getStyles(r.reward_type);
-        return `
-          <div class="p-4 rounded-2xl border ${style.container}">
-              <span class="block text-4xl font-mono font-black ${style.amount}">${r.amount}</span>
-              <span class="block text-xs font-bold uppercase tracking-widest mt-1 ${style.typeText}">${r.reward_type}</span>
-          </div>
-        `;
-      })
-      .join("");
-
-    const modalHtml = `
-      <div id="reward-modal-${this.id}" class="fixed inset-0 z-[100] flex items-center justify-center transition-opacity duration-300 bg-slate-900/90 backdrop-blur-md opacity-0">
-          <div id="container-${this.id}" class="relative w-full max-w-sm p-8 mx-4 text-center transform scale-90 transition-transform duration-300 bg-slate-800 border-2 ${theme.border} rounded-3xl ${theme.shadow}">
-
-              <div class="absolute inset-x-0 top-0 -translate-y-1/2 flex justify-center">
-                  <div class="${theme.iconBg} p-4 rounded-2xl shadow-lg animate-bounce">
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-slate-900" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-7.714 2.143L11 21l-2.286-6.857L1 12l7.714-2.143L11 3z" />
-                      </svg>
-                  </div>
-              </div>
-
-              <h2 class="mt-8 text-3xl font-black text-white tracking-tighter uppercase">Reward Claimed!</h2>
-              <p class="mt-2 text-slate-400 font-medium">You have successfully received:</p>
-
-              <div class="my-6 space-y-3">
-                  ${listItems}
-              </div>
-
-              <button id="btn-${this.id}" class="w-full py-4 ${theme.btnBg} text-slate-900 font-black rounded-xl active:scale-95 transition-all shadow-lg ${theme.btnShadow}">
-                  CONFIRM & CONTINUE
-              </button>
-          </div>
-      </div>
-    `;
-
-    document.body.insertAdjacentHTML("beforeend", modalHtml);
-    this.modalEl = document.getElementById(`reward-modal-${this.id}`);
-
-    // Bind destruction logic to the button
-    document
-      .getElementById(`btn-${this.id}`)
-      ?.addEventListener("click", () => this.destroy());
-
-    // Trigger open animations
-    requestAnimationFrame(() => {
-      this.modalEl?.classList.remove("opacity-0");
-      const container = document.getElementById(`container-${this.id}`);
-      container?.classList.replace("scale-90", "scale-100");
-    });
-  }
-
-  public destroy(): void {
-    if (!this.modalEl) return;
-
-    // Trigger close animations
-    this.modalEl.classList.add("opacity-0");
-    const container = document.getElementById(`container-${this.id}`);
-    container?.classList.replace("scale-100", "scale-95");
-
-    // Remove from DOM after transition completes
-    setTimeout(() => {
-      this.modalEl?.remove();
-      this.modalEl = null;
-    }, 300);
-  }
-}

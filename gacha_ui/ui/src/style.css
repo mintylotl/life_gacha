@@ -25,4 +25,28 @@
   body {
     @apply bg-slate-900 text-white flex justify-center items-center h-screen w-screen;
   }
+  /* Custom Scrollbar for Chrome, Safari, and Edge */
+  ::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0f172a; /* matches slate-950 */
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b; /* matches slate-800 */
+    border-radius: 10px;
+    border: 2px solid #0f172a;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #10b981; /* matches emerald-500 */
+  }
+
+  /* Firefox Support */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #1e293b #0f172a;
+  }
 }

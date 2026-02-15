@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::post};
-use chrono::{Date, DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
 use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Error as serdeError;
 use serde_json::{self};
 use std::ops::Index;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -36,9 +36,13 @@ struct Voucher {
     uuid: Uuid,
     name: String,
     cost: u64,
+    new: bool,
     description: String,
 }
 impl Voucher {
+    fn flip_new(v: Self) -> Self {
+        Self { new: false, ..v }
+    }
     fn by_id(id: u64, userid: &str, state: Option<&AppState>) -> Result<Self, PersistenceError> {
         match id {
             999 => Ok(Self::mythic_week()),
@@ -80,12 +84,13 @@ impl Voucher {
             }
         }
     }
-    fn new(id: u64, uuid: Uuid, name: String, cost: u64, desc: String) -> Self {
+    fn new(id: u64, uuid: Uuid, name: String, cost: u64, new: bool, desc: String) -> Self {
         Self {
             id,
             uuid,
             name,
             cost,
+            new,
             description: desc,
         }
     }
@@ -104,6 +109,7 @@ impl Voucher {
             uuid::Uuid::now_v7(),
             voucher.name,
             voucher.cost,
+            true,
             voucher.description,
         )
     }
@@ -111,8 +117,9 @@ impl Voucher {
         Self {
             id: 999,
             uuid: uuid::Uuid::now_v7(),
-            cost: 180000,
+            cost: 24192,
             name: "Mythic Week Off".to_string(),
+            new: true,
             description: "Get a full week off".to_string(),
         }
     }
@@ -120,8 +127,9 @@ impl Voucher {
         Self {
             id: 1,
             uuid: uuid::Uuid::now_v7(),
-            cost: 1800,
+            cost: 3200,
             name: String::from("Full Day Off"),
+            new: true,
             description: String::from("Get one full day off"),
         }
     }
@@ -129,8 +137,9 @@ impl Voucher {
         Self {
             id: 2,
             uuid: uuid::Uuid::now_v7(),
-            cost: 225,
+            cost: 285,
             name: String::from("Gaming Session (2H)"),
+            new: true,
             description: String::from("2 Hour Gaming Session"),
         }
     }
@@ -138,8 +147,9 @@ impl Voucher {
         Self {
             id: 3,
             uuid: uuid::Uuid::now_v7(),
-            cost: 120,
+            cost: 180,
             name: String::from("Gacha Slip (2H)"),
+            new: true,
             description: String::from(
                 "Permission Slip for Working on the Gacha Machine for 2 Hours",
             ),
@@ -151,6 +161,7 @@ impl Voucher {
             uuid: uuid::Uuid::now_v7(),
             cost: 150,
             name: String::from("Coffee (Premium)"),
+            new: true,
             description: String::from("Get 1 cup of Premium Coffee (250ml)"),
         }
     }
@@ -160,6 +171,7 @@ impl Voucher {
             uuid: uuid::Uuid::now_v7(),
             cost: 75,
             name: String::from("Coffee (Standard)"),
+            new: true,
             description: String::from("Get 1 cup of Coffee Standard (250ml)"),
         }
     }
@@ -167,8 +179,9 @@ impl Voucher {
         Self {
             id: 24,
             uuid: uuid::Uuid::now_v7(),
-            cost: 120,
+            cost: 160,
             name: String::from("Japanese Studies (3H)"),
+            new: true,
             description: String::from("Slip to study Japanese for 3 Hours"),
         }
     }
@@ -181,8 +194,11 @@ enum Category {
 }
 
 trait UserRepo {
-    fn load(&self, id: UserId) -> Result<User, PersistenceError>;
-    fn save(&self, user: &User) -> Result<(), PersistenceError>;
+    fn load<'a>(
+        &'a self,
+        id: UserId,
+    ) -> Result<(User, MutexGuard<'a, Connection>), PersistenceError>;
+    fn save(&self, user: &User, conn: &Connection) -> Result<(), PersistenceError>;
 }
 #[derive(Serialize, Deserialize)]
 struct User {
@@ -204,39 +220,62 @@ struct User {
     total_pulls: u128,
     total_flux_aq: u128,
     total_astrum_aq: u128,
+    todays_flux: (i64, u64),
 }
 impl UserRepo for SqliteRepo {
-    fn save(&self, user: &User) -> Result<(), PersistenceError> {
-        let user_bytes = serde_json::to_string_pretty(user)?;
-        self.db.lock().unwrap().execute(
-            "INSERT OR REPLACE INTO users (id, data) VALUES (?1, ?2)",
-            params![user.id.0, user_bytes],
-        )?;
-        Ok(())
-    }
-    fn load(&self, id: UserId) -> Result<User, PersistenceError> {
+    fn load<'a>(
+        &'a self,
+        id: UserId,
+    ) -> Result<(User, MutexGuard<'a, Connection>), PersistenceError> {
         let conn = self.db.lock().unwrap();
         let mut stmt = conn.prepare("SELECT data FROM users WHERE id = ?1")?;
-
-        let user_json: String =
-            stmt.query_row(params![id.0], |row| row.get(0))
+        let user_json: String;
+        let user: User;
+        {
+            user_json = stmt
+                .query_row(params![id.0], |row| row.get(0))
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => PersistenceError::NotFound,
                     _ => PersistenceError::DBError(e),
                 })?;
 
-        let user: User = serde_json::from_str(&user_json)?;
-        Ok(user)
+            user = serde_json::from_str(&user_json)?;
+            drop(stmt);
+        };
+        Ok((user, conn))
+    }
+    fn save(&self, user: &User, conn: &Connection) -> Result<(), PersistenceError> {
+        let user_bytes = serde_json::to_string_pretty(user)?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO users (id, data) VALUES (?1, ?2)",
+            params![user.id.0, user_bytes],
+        )?;
+        Ok(())
     }
 }
 impl SqliteRepo {
+    /*fn mark_all_vouchers_new(&self) -> Result<(), rusqlite::Error> {
+        let conn = self.db.lock().unwrap();
+        conn.execute(
+            "UPDATE users
+             SET data = json_set(
+                 data,
+                 '$.templates',
+                 (SELECT json_group_array(json_set(value, '$.new', json('true')))
+                  FROM json_each(users.data, '$.vouchers'))
+             )",
+            [],
+        )?;
+        Ok(())
+    }*/
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let init = false;
+        let init = true;
         let user = User {
             id: UserId("axol999".to_string()),
             astrum: 1600,
-            astrai: 15,
+            astrai: 30,
             flux: 500,
             has_slip: false,
             email: None,
@@ -246,6 +285,7 @@ impl SqliteRepo {
             s_pity: 0,
             sss_pity: 0,
             dailies: Daily::init(),
+            todays_flux: (0, 0),
             total_pulls: 0,
             total_flux_aq: 0,
             total_astrum_aq: 0,
@@ -253,6 +293,7 @@ impl SqliteRepo {
             vouchers: Vec::<Voucher>::new(),
             templates: Voucher::get_templates(),
         };
+
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -353,12 +394,14 @@ struct AppState {
     repo: Arc<SqliteRepo>,
 }
 
-fn load_user(userid: String, state: &AppState) -> Result<User, StatusCode> {
-    let user = state
+fn load_user(
+    userid: String,
+    state: &AppState,
+) -> Result<(User, MutexGuard<Connection>), StatusCode> {
+    Ok(state
         .repo
         .load(UserId(userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    Ok(user)
+        .map_err(|_| StatusCode::NOT_FOUND)?)
 }
 
 fn quick_roll() -> u8 {
@@ -394,23 +437,35 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.s_pity = 0;
             user.sss_pity += 1;
             user.a_pity += 1;
-            user.flux += 240;
-            user.total_flux_aq += 240;
+            user.flux += 360;
+            user.total_flux_aq += 360;
 
-            vouchers.push(Voucher::new(
-                24,
-                uuid::Uuid::now_v7(),
-                "Japanese [3H]".into(),
-                40,
-                "Study Japanese for 3 Hours".into(),
-            ));
-
+            if quick_roll() < 64 {
+                vouchers.push(Voucher::new(
+                    24,
+                    uuid::Uuid::now_v7(),
+                    "Japanese [3H]".into(),
+                    150,
+                    true,
+                    "Study Japanese for 3 Hours".into(),
+                ));
+            } else {
+                vouchers.push(Voucher::new(
+                    24,
+                    uuid::Uuid::now_v7(),
+                    "Japanese [1H]".into(),
+                    50,
+                    true,
+                    "Study Japanese for 1 Hour".into(),
+                ));
+            }
             if quick_roll() < 85 {
                 vouchers.push(Voucher::new(
                     9,
                     uuid::Uuid::now_v7(),
                     "Gacha Slip [2H]".into(),
-                    30,
+                    180,
+                    true,
                     "Permission Slip to Work on LifeGacha for 2 Hours".into(),
                 ));
             }
@@ -427,14 +482,15 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.sss_pity += 1;
             user.s_pity += 1;
 
-            user.flux += 75;
-            user.total_flux_aq += 75;
+            user.flux += 120;
+            user.total_flux_aq += 120;
 
             vouchers.push(Voucher::new(
                 0,
                 uuid::Uuid::now_v7(),
                 "15 Minute Break".into(),
-                20,
+                35,
+                true,
                 "Take a 15 minute breather break".into(),
             ));
         }
@@ -443,8 +499,8 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) {
             user.s_pity += 1;
             user.a_pity += 1;
 
-            user.flux += 5;
-            user.total_flux_aq += 5;
+            user.flux += 10;
+            user.total_flux_aq += 10;
 
             if quick_roll() == 24 {
                 vouchers.push(Voucher::gaming());
@@ -466,7 +522,7 @@ async fn handle_pull(
     State(state): State<AppState>,
     Json(req): Json<PullRequest>,
 ) -> Result<Json<PullResponse>, StatusCode> {
-    let mut user = load_user(req.userid, &state)?;
+    let (mut user, conn) = load_user(req.userid, &state)?;
 
     if user.astrai < 1 && user.astrum < 160 {
         return Ok(Json(PullResponse {
@@ -478,7 +534,7 @@ async fn handle_pull(
     let outcome = roll(&pityctx);
 
     apply_outcome(&mut user, &outcome);
-    let _ = state.repo.save(&user);
+    let _ = state.repo.save(&user, &conn);
 
     Ok(Json(PullResponse {
         result: SerializedRarity::try_from(outcome).unwrap(),
@@ -493,7 +549,7 @@ async fn start_timer(
     Json(req): Json<TimerRequest>,
 ) -> Result<Json<TimerResponse>, StatusCode> {
     println!("{}, {:?}", req.userid, req.category);
-    let mut user = load_user(req.userid, &state)?;
+    let (mut user, conn) = load_user(req.userid, &state)?;
 
     if user.active_timer {
         return Ok(Json(TimerResponse::already_exists(
@@ -510,7 +566,7 @@ async fn start_timer(
     });
 
     user.active_timer = true;
-    let _ = state.repo.save(&mut user);
+    let _ = state.repo.save(&user, &conn);
 
     Ok(Json(TimerResponse {
         status: "Timing...".to_string(),
@@ -523,7 +579,7 @@ async fn stop_timer(
     State(state): State<AppState>,
     Json(req): Json<TimerRequest>,
 ) -> Result<Json<TimerResponse>, StatusCode> {
-    let mut user = load_user(req.userid, &state)?;
+    let (mut user, conn) = load_user(req.userid, &state)?;
 
     if !user.active_timer {
         return Ok(Json(TimerResponse::new(
@@ -540,7 +596,7 @@ async fn stop_timer(
     user.astrum += reward.unwrap();
     user.total_astrum_aq += reward.unwrap() as u128;
 
-    let _ = state.repo.save(&user);
+    let _ = state.repo.save(&user, &conn);
 
     Ok(Json(TimerResponse {
         status: format!("Timer Stopped"),
@@ -559,12 +615,12 @@ fn resolve_timer(timer: Timer) -> u64 {
     }
 
     match timer.category {
-        Category::SNode => reward = ((minutes as f64 / 60.0) * 350.0) as i64,
+        Category::SNode => reward = ((minutes as f64 / 60.0) * 240.0) as i64,
         Category::ANode => {
-            reward = ((minutes as f64 / 30.0) as f64 * 80.0) as i64;
+            reward = ((minutes as f64 / 30.0) as f64 * 120.0) as i64;
         }
         Category::BNode => {
-            reward = ((minutes as f64 / 10.0) as f64 * 20.0) as i64;
+            reward = ((minutes as f64 / 10.0) as f64 * 60.0) as i64;
         }
     }
 
@@ -586,11 +642,7 @@ async fn get_user_vouchers(
     State(state): State<AppState>,
     Json(req): Json<VoucherRequest>,
 ) -> Result<Json<Vec<Voucher>>, StatusCode> {
-    let user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-
+    let (user, _conn) = load_user(req.userid, &state)?;
     if req.store {
         return Ok(Json(user.templates));
     }
@@ -625,14 +677,14 @@ async fn create(
     State(state): State<AppState>,
     Json(req): Json<CreateRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let mut user = load_user(req.userid, &state)?;
+    let (mut user, conn) = load_user(req.userid, &state)?;
     let voucher = req.voucher;
     if voucher.cost < 1 || voucher.name.is_empty() {
         return Err(StatusCode::LENGTH_REQUIRED);
     }
 
     user.templates.push(Voucher::from_req_voucher(voucher));
-    let _ = state.repo.save(&user);
+    let _ = state.repo.save(&user, &conn);
     Ok(StatusCode::CREATED)
 }
 
@@ -646,21 +698,25 @@ async fn purchase(
     State(state): State<AppState>,
     Json(req): Json<PurchaseRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut user = load_user(req.userid.clone(), &state)?;
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
 
     let req_voucher =
         Voucher::by_id(req.id, &req.userid, Some(&state)).map_err(|_| StatusCode::NOT_FOUND)?;
+    let cost = req_voucher.cost * req.amount as u64;
 
-    if user.flux < (req_voucher.cost * req.amount as u64) as i128 || req.amount < 1 {
+    if user.flux < cost as i128 || req.amount < 1 {
         return Err(StatusCode::FORBIDDEN);
     }
-    user.flux -= (req_voucher.cost * req.amount as u64) as i128;
 
-    let mut vec = user.vouchers;
-    vec.push(req_voucher.clone());
-    user.vouchers = vec;
+    user.flux -= cost as i128;
 
-    let _ = state.repo.save(&user);
+    if user.dailies[3].last_claimed < Daily::cycle() {
+        user.todays_flux.1 += cost;
+    }
+
+    user.vouchers.push(req_voucher.clone());
+    let _ = state.repo.save(&user, &conn);
+
     Ok(Json(serde_json::json!({
         "result": format!(
         "Purchased Item: {}",
@@ -677,7 +733,7 @@ async fn consume(
     State(state): State<AppState>,
     Json(req): Json<ConsumeRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let mut user = load_user(req.userid.clone(), &state)?;
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
     let vec: Vec<Voucher>;
 
     vec = user
@@ -687,7 +743,7 @@ async fn consume(
         .collect();
     user.vouchers = vec;
 
-    let _ = state.repo.save(&user);
+    let _ = state.repo.save(&user, &conn);
     Ok(Json(serde_json::json!({
         "status": "Item Consumed",
     })))
@@ -711,7 +767,21 @@ impl Daily {
                 last_claimed: 0 as i64,
             });
         }
+        vec[3].claimable = false;
+
         vec
+    }
+    fn cycle() -> i64 {
+        let now = Utc::now();
+        let mut cycle_start = Utc
+            .with_ymd_and_hms(now.year(), now.month(), now.day(), 4, 0, 0)
+            .unwrap();
+
+        if now < cycle_start {
+            cycle_start -= Duration::days(1);
+        }
+
+        cycle_start.timestamp()
     }
 }
 #[derive(Deserialize)]
@@ -728,39 +798,79 @@ async fn dailies(
     State(state): State<AppState>,
     Json(req): Json<DailiesReq>,
 ) -> Result<Json<DailiesResp>, StatusCode> {
-    let mut user = load_user(req.userid, &state)?;
-
-    let now = Utc::now();
-    let mut cycle_start = Utc
-        .with_ymd_and_hms(now.year(), now.month(), now.day(), 4, 0, 0)
-        .unwrap();
-
-    if now < cycle_start {
-        cycle_start -= Duration::days(1);
-    }
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+    let mut ok = false;
 
     if req.info {
         for daily in user.dailies.iter_mut() {
-            if daily.last_claimed >= cycle_start.timestamp() {
+            if daily.last_claimed >= Daily::cycle() {
                 daily.claimable = false;
+                daily.claimed = true;
             } else {
                 daily.claimable = true;
                 daily.claimed = false;
             }
+
+            if daily.id == 3 {
+                if user.todays_flux.1 >= 500 && !daily.claimed {
+                    daily.claimable = true;
+                } else {
+                    daily.claimable = false;
+                }
+            }
         }
 
-        let _ = state.repo.save(&user);
+        ok = true;
+    }
+    if req.id < 4 && !req.info && user.dailies[req.id as usize].last_claimed < Daily::cycle() {
+        user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
+        user.dailies[req.id as usize].claimed = true;
+
+        if req.id == 3 {
+            user.todays_flux.1 = 0;
+        }
+
+        match req.id {
+            0 => {
+                user.astrum += 40;
+                user.astrai += 1;
+            }
+            1 => {
+                user.astrum += 40;
+                user.astrai += 2;
+            }
+            2 => {
+                user.astrum += 80;
+                user.flux += 75;
+            }
+            3 => {
+                user.astrum += 80;
+            }
+            _ => {
+                println!("This code will never run! Hehe")
+            }
+        }
+
+        let mut found_incomplete: bool = false;
+        for daily in user.dailies.iter() {
+            if !daily.claimed {
+                found_incomplete = true;
+            }
+        }
+        if !found_incomplete {
+            user.astrum += 100;
+            user.astrai += 2;
+        }
+
+        ok = true;
+    }
+
+    if ok {
+        let _ = state.repo.save(&user, &conn);
         return Ok(Json(DailiesResp {
             dailies: user.dailies.clone(),
         }));
     }
-    if req.id < 4 && !req.info {
-        user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
-        user.dailies[req.id as usize].claimed = true;
-
-        let _ = state.repo.save(&user);
-    }
-
     Err(StatusCode::FORBIDDEN)
 }
 
@@ -772,10 +882,7 @@ async fn get_user_info(
     State(state): State<AppState>,
     Json(req): Json<InfoRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let user = state
-        .repo
-        .load(UserId(req.userid))
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let (user, _conn) = load_user(req.userid, &state)?;
 
     Ok(Json(serde_json::json!(
         {
@@ -786,10 +893,39 @@ async fn get_user_info(
     )))
 }
 
+async fn remove_new_logo(
+    State(state): State<AppState>,
+    Json(req): Json<String>,
+) -> Result<Json<String>, StatusCode> {
+    let (mut user, conn) = load_user("axol999".into(), &state)?;
+
+    if let Some(voucher) = user.vouchers.iter_mut().find(|f| f.uuid.to_string() == req) {
+        voucher.new = false;
+    }
+
+    let _ = state
+        .repo
+        .save(&user, &conn)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    Ok(Json("Flipped".into()))
+}
+
 #[tokio::main]
 async fn main() {
     let repo = SqliteRepo::new("userdata.sql");
     let state = AppState { repo: repo.into() };
+
+    {
+        let state_tmp = state.clone();
+
+        let (mut user, conn) = load_user("axol999".into(), &state_tmp).unwrap();
+        user.vouchers.iter_mut().filter(|f| !f.new).for_each(|f| {
+            f.new = true;
+        });
+
+        let _ = state_tmp.repo.save(&user, &conn);
+    }
 
     let app = Router::new()
         .route("/start_timer", post(start_timer))
@@ -801,6 +937,7 @@ async fn main() {
         .route("/consume", post(consume))
         .route("/create", post(create))
         .route("/dailies", post(dailies))
+        .route("/remove_new_logo", post(remove_new_logo))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

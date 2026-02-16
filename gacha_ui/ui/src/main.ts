@@ -21,8 +21,6 @@ class RewardManager {
   constructor(rewards: Reward[]) {
     // Excellent sanity check to prevent empty/zero rewards
     this.rewards = rewards.filter((f) => Number(f.amount) > 0);
-
-    console.log(this.rewards);
     this.id = generateRandomString(6);
 
     // Only render if there are actually rewards to show
@@ -238,10 +236,26 @@ interface ConsumeRequest {
   });
   const data = await response.json();
 
-  console.log(data);
-
   if (voucher) {
-    voucher.outerHTML = "";
+    // 1. Lock the current dimensions so it doesn't jump
+    const rect = voucher.getBoundingClientRect();
+    voucher.style.width = `${rect.width}px`;
+    voucher.style.height = `${rect.height}px`;
+
+    // 2. Animate the element away
+    // We use scale-0 and a width/margin-0 to force the grid to "shrink" the hole
+    voucher.classList.add("transition-all", "duration-500", "ease-in-out");
+
+    requestAnimationFrame(() => {
+      voucher.classList.add("scale-0", "opacity-0", "w-0", "h-0", "m-0", "p-0");
+      voucher.style.width = "0px"; // Force the grid gap to close
+      voucher.style.margin = "0px";
+    });
+
+    // 3. Clean up the DOM
+    setTimeout(() => {
+      voucher.remove();
+    }, 500);
   }
 };
 
@@ -454,7 +468,7 @@ async function apiActionGetVouchers(
       data_v.forEach((voucher) => {
         let buttonPrefix;
         if (store) {
-          buttonPrefix = `onclick="${funcName}(${voucher.id})"`;
+          buttonPrefix = `onclick="${funcName}(${voucher.id}, '${voucher.uuid}')"`;
         } else {
           buttonPrefix = `onclick="${funcName}('${voucher.uuid}')"`;
         }
@@ -473,47 +487,56 @@ async function apiActionGetVouchers(
         }
 
         const voucherHTML = `
-  <div class="relative voucher-box w-full">
-    ${is_new}
-    <div id="${voucher.uuid}" class="group relative flex flex-col bg-slate-700/50 backdrop-blur-sm rounded-2xl shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 transition-all duration-300 h-auto min-h-[350px] md:h-[400px] border border-slate-600 overflow-hidden">
-      <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] shrink-0"></div>
-      <div class="p-5 md:p-6 flex-1 flex flex-col h-full">
-        <div class="flex justify-between items-start mb-3 md:mb-4">
-          <h2 class="text-lg md:text-xl font-bold text-slate-100 tracking-tight leading-tight uppercase group-hover:text-emerald-400 transition-colors line-clamp-2">
-            ${voucher.name}
-          </h2>
-          <span class="bg-slate-800 text-slate-400 text-[9px] font-mono py-1 px-2 rounded border border-slate-600 shrink-0 ml-2">
-            #${voucher.id}
-          </span>
-        </div>
+        <div id="${voucher.uuid}" class="relative voucher-box w-full">
+          ${is_new}
+          <div class="group relative flex flex-col bg-slate-700/50 backdrop-blur-sm rounded-2xl shadow-lg hover:shadow-emerald-500/10 hover:border-emerald-500/50 transition-all duration-300 h-auto min-h-[350px] md:h-[400px] border border-slate-600 overflow-hidden">
+            <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] shrink-0"></div>
+            <div class="p-5 md:p-6 flex-1 flex flex-col h-full">
+              <div class="flex justify-between items-start mb-3 md:mb-4">
+                <h2 class="text-lg md:text-xl font-bold text-slate-100 tracking-tight leading-tight uppercase group-hover:text-emerald-400 transition-colors line-clamp-2">
+                  ${voucher.name}
+                </h2>
+                <span class="bg-slate-800 text-slate-400 text-[9px] font-mono py-1 px-2 rounded border border-slate-600 shrink-0 ml-2">
+                  #${voucher.id}
+                </span>
+              </div>
 
-        <div class="mb-3 md:mb-4">
-          <span class="text-3xl md:text-4xl font-black text-emerald-400 font-mono">${voucher.cost}</span>
-          <span class="text-[10px] md:text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">credits</span>
-        </div>
+              <div class="mb-3 md:mb-4">
+                <span class="text-3xl md:text-4xl font-black text-emerald-400 font-mono">${voucher.cost}</span>
+                <span class="text-[10px] md:text-xs font-bold text-slate-500 ml-1 uppercase tracking-widest">credits</span>
+              </div>
 
-        <p class="text-slate-400 leading-relaxed text-xs md:text-sm flex-1 overflow-y-auto md:overflow-hidden italic">
-          "${voucher.description}"
-        </p>
+              <p class="text-slate-400 leading-relaxed text-xs md:text-sm flex-1 overflow-y-auto md:overflow-hidden italic">
+                "${voucher.description}"
+              </p>
 
-        <div class="mt-auto pt-3 md:pt-4 border-t border-slate-600/50">
-          <p class="text-[9px] md:text-[10px] text-slate-500 font-mono truncate opacity-60">
-            UUID: ${voucher.uuid}
-          </p>
-        </div>
+              <div class="mt-auto pt-3 md:pt-4 border-t border-slate-600/50">
+                <p class="text-[9px] md:text-[10px] text-slate-500 font-mono truncate opacity-60">
+                  UUID: ${voucher.uuid}
+                </p>
+              </div>
 
-        <button ${buttonPrefix} class="mt-3 md:mt-4 w-full bg-emerald-600 text-slate-900 font-black py-2.5 md:py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
-          <span class="text-sm md:text-base">REDEEM</span>
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd" />
-          </svg>
-        </button>
-      </div>
-    </div>
-  </div>
-`;
+              <button ${buttonPrefix} class="mt-3 md:mt-4 w-full bg-emerald-600 text-slate-900 font-black py-2.5 md:py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
+                <span class="text-sm md:text-base">REDEEM</span>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>`;
 
         boxes.insertAdjacentHTML("beforeend", voucherHTML);
+
+        if (store) {
+          const voucherEle = document.getElementById!(voucher.uuid);
+          voucherEle?.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+
+            showVoucherCtx(e, voucher.uuid, Number(voucher.id));
+          });
+        }
+
         if (voucher.new) {
           vouchers_obsv.push(voucher);
         }
@@ -530,8 +553,6 @@ async function apiActionGetVouchers(
 
           vouchers_obsv.forEach((voucher) => {
             observer.observe(document.getElementById(voucher.uuid)!);
-            console.log(voucher.name);
-            console.log("here");
           });
         }, 50);
       }
@@ -554,9 +575,8 @@ async function flip_new(uuid: string) {
   }
 }
 
-(window as any).purchase = async function purchase(id: number) {
+(window as any).purchase = async function purchase(id: number, uuid: string) {
   let payload = { id, userid: get_userid(), amount: 0 };
-  const display = document.getElementById("pull-display");
   payload.amount = 1;
 
   try {
@@ -568,17 +588,237 @@ async function flip_new(uuid: string) {
 
     let data = await response.json();
 
-    if (display) {
-      display.innerHTML = `<div class="text-cyan-400">${data.result}</div>`;
-    }
-    queryUserFunds();
-
     new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
   } catch (err) {
     console.log(err);
-    display!.innerHTML = `<div class="text-cyan-400">Error: Insufficient Funds</div>`;
+
+    const buyButton = document.getElementById(uuid)!.querySelector("button")!;
+    let text = buyButton.innerText;
+
+    buyButton.disabled = true;
+    buyButton.classList.replace("text-slate-900", "text-white");
+    buyButton.classList.replace("bg-emerald-600", "bg-red-500");
+    buyButton.classList.remove("hover:bg-emerald-400");
+    buyButton.classList.add("animate-shake", "duration-100", "transition-all");
+    buyButton.innerText = "Insufficient Funds!";
+
+    setTimeout(() => {
+      buyButton.classList.replace("text-white", "text-slate-900");
+      buyButton.classList.replace("bg-red-500", "bg-emerald-600");
+      buyButton.classList.remove("animate-shake");
+      buyButton.classList.add("hover:bg-emerald-400");
+      buyButton.innerText = text;
+      buyButton.disabled = false;
+    }, 1000);
   }
 };
+async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
+  // 1. Prevent the default browser menu
+  e.preventDefault();
+
+  // 2. Remove any existing context menus first to avoid duplicates
+  const existingMenu = document.getElementById("custom-context-menu");
+  if (existingMenu) existingMenu.remove();
+
+  // 3. Create the menu container
+  const menu = document.createElement("div");
+  menu.id = "custom-context-menu";
+
+  // Tailwind styling: Fixed, elevated, rounded, and blurred
+  menu.className = `
+    fixed z-[110] w-48 bg-slate-800/95 backdrop-blur-md
+    border border-slate-700 shadow-2xl rounded-xl p-1.5
+    animate-in fade-in zoom-in-95 duration-100
+  `;
+
+  // 4. Set the position based on the mouse click
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top = `${e.clientY}px`;
+
+  // 5. Build the rows
+  menu.innerHTML = `
+    <button id="ctx-delete-${voucherId}" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-semibold text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors group">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+      </svg>
+      Delete
+    </button>
+
+    <div class="h-px bg-slate-700/50 my-1"></div>
+
+    <button id="ctx-custom-${voucherId}" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 rounded-lg transition-colors group">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+      </svg>
+      Advanced Buy
+    </button>
+  `;
+
+  document.body.appendChild(menu);
+
+  // 6. Handle closing the menu when clicking elsewhere
+  const closeMenu = () => {
+    menu.classList.add("opacity-0", "scale-95");
+    setTimeout(() => menu.remove(), 100);
+    document.removeEventListener("click", closeMenu);
+    document.removeEventListener("wheel", closeMenu);
+  };
+
+  // Small delay to prevent the current click from closing it immediately
+  setTimeout(() => {
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("wheel", closeMenu); // Close on scroll for better UX
+  }, 10);
+
+  const voucher = document.getElementById(voucherId);
+
+  let customVoucher = menu.querySelector(`#ctx-custom-${voucherId}`);
+  customVoucher?.addEventListener("click", () => {
+    const modal = document.getElementById("slider-modal")!;
+    const slider = document.getElementById(
+      "purchase-slider",
+    ) as HTMLInputElement;
+    const numInput = document.getElementById(
+      "slider-input",
+    ) as HTMLInputElement; // The new manual input
+    const buyBtn = document.getElementById("buy-button")!;
+
+    /**
+     * Visual feedback when the number changes
+     */
+    function animatePop() {
+      numInput.classList.add("scale-110", "text-indigo-300");
+      setTimeout(
+        () => numInput.classList.remove("scale-110", "text-indigo-300"),
+        50,
+      );
+    }
+
+    /**
+     * 1. Slider -> Manual Input
+     */
+    slider.addEventListener("input", () => {
+      numInput.value = slider.value;
+      animatePop();
+    });
+
+    /**
+     * 2. Manual Input -> Slider
+     */
+    numInput.addEventListener("input", () => {
+      let val = parseInt(numInput.value);
+
+      // Constrain the range 1-255
+      if (val > 255) {
+        val = 255;
+        numInput.value = "255";
+      }
+
+      // We don't force '1' immediately on empty so the user can backspace
+      if (!isNaN(val) && val >= 1) {
+        slider.value = val.toString();
+        animatePop();
+      }
+    });
+
+    /**
+     * 3. Input Cleanup (runs when user clicks away)
+     */
+    numInput.addEventListener("blur", () => {
+      if (numInput.value === "" || parseInt(numInput.value) < 1) {
+        numInput.value = "1";
+        slider.value = "1";
+      }
+    });
+
+    /**
+     * Control Functions
+     */
+    function openSliderModal() {
+      // Reset to defaults every time it opens
+      slider.value = "1";
+      numInput.value = "1";
+
+      modal.classList.remove("hidden");
+      modal.classList.add("flex"); // Ensure flex is applied for centering
+    }
+
+    (window as any).closeSliderModal = function closeSliderModal() {
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+    };
+
+    /**
+     * The "Action"
+     */
+    let currentID = id;
+
+    const buy = function buy() {
+      const amount = parseInt(numInput.value);
+      if (isNaN(amount) || amount < 1) {
+        return;
+      }
+
+      custom_voucher(currentID, amount);
+      buyBtn.removeEventListener("click", buy);
+      (window as any).closeSliderModal();
+    };
+
+    buyBtn.addEventListener("click", buy);
+    openSliderModal();
+  });
+
+  let deleteVoucher = menu.querySelector(`#ctx-delete-${voucherId}`);
+  deleteVoucher?.addEventListener("click", async () => {
+    let condition = await delete_voucher(voucherId);
+    if (condition === true) {
+      voucher?.remove();
+    }
+  });
+}
+async function delete_voucher(uuid: string): Promise<boolean> {
+  let payload = { userid: get_userid(), uuid: uuid };
+
+  try {
+    let response = await fetch(`${API_BASE}/delete_storeitem`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    let data = await response.json();
+
+    if (response.ok) {
+      return true;
+    }
+  } catch (err) {
+    console.log(err);
+    return false;
+  }
+  return false;
+}
+async function custom_voucher(id: number, amount: number) {
+  let payload = { userid: get_userid(), id: id, amount: amount };
+
+  try {
+    let response = await fetch(`${API_BASE}/create_advanced`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    let data = await response.json();
+
+    if (response.ok) {
+      new RewardManager([
+        {
+          reward_type: "Voucher",
+          amount: amount,
+        },
+      ]);
+    }
+  } catch (err) {
+    console.log(err);
+  }
+}
 
 async function apiActionPull10(path: string) {
   const display = document.getElementById("pull-display");
@@ -613,16 +853,7 @@ async function apiActionPull10(path: string) {
         vouchers = vouchers + Number(tup_result.vouchers);
 
         if (tup_result.result === "NoTickets") {
-          const button = document.getElementById(
-            "pull10-btn",
-          ) as HTMLButtonElement;
-          button.outerHTML = `
-            <button id="pull10-btn" class="w-full py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
-              Pull x10
-            </button>
-
-          `;
-          return;
+          break;
         }
         if (tup_result.result === "Mythic") {
           mythic += 1;
@@ -974,7 +1205,6 @@ document.querySelector("#app")!.innerHTML = `
           Pull to Display...
         </div>
         <div id="pull-display-single" class="m-0 md:m-8 p-1 bg-slate-900 rounded-lg font-mono h-full text-cyan-300 flex justify-center items-center text-center text-sm md:text-base">
-          IDLE
         </div>
     </div>
 
@@ -1069,7 +1299,7 @@ document.querySelector("#app")!.innerHTML = `
       </button>
     </div>
 </div>
-<div id="store-boxes" class="w-full h-full content-start grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6">
+<div id="store-boxes" class="w-full h-full content-start grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6 transition-all duration-300">
   </div>
 </div>
 </section>
@@ -1141,6 +1371,50 @@ document.querySelector("#app")!.innerHTML = `
 </div>
 
 <div id="reward-modal-ph"></div>
+
+
+<div id="slider-modal" class="fixed inset-0 z-[200] items-center justify-center bg-black/60 backdrop-blur-sm hidden">
+  <div class="bg-slate-900 border border-slate-700 w-80 p-6 rounded-2xl shadow-2xl scale-95 animate-in fade-in zoom-in duration-200">
+
+    <h3 class="text-xl font-bold text-white mb-1">Purchase Quantity</h3>
+    <p class="text-slate-400 text-sm mb-6">Select how many you'd like to buy.</p>
+
+    <div class="flex justify-center mb-2">
+      <input
+        type="number"
+        id="slider-input"
+        min="1"
+        max="255"
+        value="1"
+        class="w-full bg-transparent text-6xl font-black text-indigo-400 text-center border-none focus:ring-0 outline-none cursor-text transition-transform duration-75"
+      >
+    </div>
+
+    <div class="px-2 mb-8">
+      <input
+        type="range"
+        id="purchase-slider"
+        min="1"
+        max="255"
+        value="1"
+        class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+      >
+      <div class="flex justify-between mt-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+        <span>Min</span>
+        <span>Max</span>
+      </div>
+    </div>
+
+    <div class="flex gap-3">
+      <button onclick="closeSliderModal()" class="flex-1 px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors font-semibold">
+        Cancel
+      </button>
+      <button id="buy-button" class="flex-1 px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-all font-bold shadow-lg shadow-indigo-500/20 active:scale-95">
+        BUY
+      </button>
+    </div>
+  </div>
+</div>
 `;
 
 // Event Listeners
@@ -1263,7 +1537,6 @@ class RewardModal {
     if (element) {
       this.el = element;
       this.isOpen = true;
-      console.log(`Initialized modal ${this.el}`);
     }
   }
 
@@ -1276,7 +1549,6 @@ class RewardModal {
 
       this.el.remove();
       this.isOpen = false;
-      console.log(`Destroyed modal`);
     }
   }
 }
@@ -1322,7 +1594,6 @@ async function makeRewardModal(): Promise<RewardModal> {
   let ele = document.getElementById("reward-modal-ph");
   if (ele) {
     ele.innerHTML = modal;
-    console.log("Inserted stuff");
   }
 
   await sleep(50);
@@ -1347,7 +1618,6 @@ async function prepareDailies() {
 
     // Re-check the DOM every 3 seconds if not found
     while (!button_elem) {
-      console.log(`Searching for daily${index}...`);
       await sleep(1000);
       button_elem = document.getElementById(id);
     }

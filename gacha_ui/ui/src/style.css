@@ -17,6 +17,19 @@
 
   /* Define the utility name */
   --animate-shake: shake 0.15s ease-in-out 2;
+  @keyframes pop-out {
+    0% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    20% {
+      transform: scale(1.1);
+    } /* Slight swell for "fun" factor */
+    100% {
+      transform: scale(0);
+      opacity: 0;
+    }
+  }
 
   --color-brand: #6366f1;
 }
@@ -48,5 +61,26 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: #1e293b #0f172a;
+  }
+
+  .animate-pop-out {
+    animation: pop-out 0.4s cubic-bezier(0.47, 0, 0.745, 0.715) forwards;
+  }
+
+  /* Hide arrows for Chrome, Safari, Edge, Opera */
+  #slider-input::-webkit-outer-spin-button,
+  #slider-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Hide arrows for Firefox */
+  #slider-input {
+    -moz-appearance: textfield;
+  }
+
+  /* Ensure the cursor looks clickable */
+  .cursor-edit {
+    cursor: text;
   }
 }

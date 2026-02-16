@@ -1,5 +1,6 @@
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::response::AppendHeaders;
 use axum::{Json, Router, routing::post};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
@@ -723,11 +724,7 @@ async fn purchase(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    user.flux -= cost as i128;
-
-    if user.dailies[3].last_claimed < Daily::cycle() {
-        user.todays_flux.1 += cost;
-    }
+    decrease_flux(&mut user, cost as i128);
 
     user.vouchers.push(req_voucher.clone());
     let _ = state.repo.save(&user, &conn);
@@ -737,6 +734,25 @@ async fn purchase(
         "result": format!(
         "Purchased Item: {}",
         &req_voucher.name),
+    })))
+}
+
+async fn delete_storeitem(
+    State(state): State<AppState>,
+    Json(req): Json<ConsumeRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+
+    let voucher = user.templates.iter().find(|v| v.uuid == req.uuid);
+    if voucher.is_none() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    user.templates.retain(|v| v.uuid != req.uuid);
+    let _ = state.repo.save(&user, &conn);
+
+    Ok(Json(serde_json::json!({
+        "status": "Item Deleted",
     })))
 }
 
@@ -763,6 +779,53 @@ async fn consume(
     Ok(Json(serde_json::json!({
         "status": "Item Consumed",
     })))
+}
+
+fn decrease_flux(user: &mut User, amount: i128) {
+    user.flux -= amount;
+
+    if user.dailies[3].last_claimed < Daily::cycle() {
+        user.todays_flux.1 += amount as u64;
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateAdvanced {
+    userid: String,
+    id: u64,
+    amount: u8,
+}
+async fn create_advanced(
+    State(state): State<AppState>,
+    Json(req): Json<CreateAdvanced>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+
+    let voucher =
+        Voucher::by_id(req.id, &req.userid, Some(&state)).map_err(|_| StatusCode::NOT_FOUND)?;
+    let cost = (req.amount as u64 * voucher.cost) as i128;
+    if user.flux < cost {
+        return Err(StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    for idx in 0..req.amount as usize {
+        if idx > 25 {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        user.vouchers.push(Voucher::new(
+            voucher.id,
+            uuid::Uuid::now_v7(),
+            voucher.name.clone(),
+            voucher.cost,
+            true,
+            voucher.description.clone(),
+        ));
+    }
+
+    decrease_flux(&mut user, cost);
+
+    let _ = state.repo.save(&user, &conn);
+    Ok(Json(serde_json::json!({"status": "created"})))
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -818,8 +881,8 @@ async fn dailies(
     Json(req): Json<DailiesReq>,
 ) -> Result<Json<DailiesResp>, StatusCode> {
     let (mut user, conn) = load_user(req.userid.clone(), &state)?;
-    let mut ok = false;
     let (mut rw_astrum, mut rw_flux, mut rw_astrai) = (0, 0, 0);
+    let mut ok = false;
 
     if req.info {
         for daily in user.dailies.iter_mut() {
@@ -884,13 +947,7 @@ async fn dailies(
             }
         }
 
-        let mut found_incomplete: bool = false;
-        for daily in user.dailies.iter() {
-            if !daily.claimed {
-                found_incomplete = true;
-            }
-        }
-        if !found_incomplete {
+        if user.dailies.iter().all(|f| f.claimed) {
             user.astrum += 100;
             user.astrai += 2;
 
@@ -964,11 +1021,13 @@ async fn main() {
         let state_tmp = state.clone();
 
         let (mut user, conn) = load_user(get_username(), &state_tmp).unwrap();
-        user.vouchers.iter_mut().filter(|f| !f.new).for_each(|f| {
-            f.new = true;
-        });
+        //user.vouchers.iter_mut().filter(|f| !f.new).for_each(|f| {
+        //    f.new = true;
+        //});
 
-        user.dailies = Daily::init();
+        //user.dailies = Daily::init();
+
+        user.templates = Voucher::get_templates();
 
         let _ = state_tmp.repo.save(&user, &conn);
     }*/
@@ -984,6 +1043,8 @@ async fn main() {
         .route("/create", post(create))
         .route("/dailies", post(dailies))
         .route("/remove_new_logo", post(remove_new_logo))
+        .route("/delete_storeitem", post(delete_storeitem))
+        .route("/create_advanced", post(create_advanced))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

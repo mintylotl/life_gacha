@@ -221,7 +221,7 @@ struct User {
     templates: Vec<Voucher>,
     active_timer: bool,
     timer: Option<Timer>,
-    isrdos: Option<Vec<ISRDO>>,
+    isrdos: Vec<ISRDO>,
     sss_pity: u16,
     s_pity: u16,
     a_pity: u16,
@@ -300,7 +300,7 @@ impl SqliteRepo {
             username: "Test User".to_string(),
             vouchers: Vec::<Voucher>::new(),
             templates: Voucher::get_templates(),
-            isrdos: Some(Vec::<ISRDO>::new()),
+            isrdos: Vec::<ISRDO>::new(),
         };
 
         let _ = conn.execute(
@@ -1092,7 +1092,7 @@ async fn remove_new_logo(
 }
 
 fn get_username() -> String {
-    "testing".to_string()
+    "axol999".to_string()
 }
 
 #[tokio::main]
@@ -1100,7 +1100,7 @@ async fn main() {
     let repo = SqliteRepo::new("userdata.sql");
     let state = AppState { repo: repo.into() };
 
-    {
+    /*{
         let state_tmp = state.clone();
 
         let (mut user, conn) = load_user(get_username(), &state_tmp).unwrap();
@@ -1111,9 +1111,9 @@ async fn main() {
         //user.dailies = Daily::init();
 
         //user.templates = Voucher::get_templates();
-        user.isrdos = Some(Vec::<ISRDO>::new());
+        user.isrdos = Vec::<ISRDO>::new();
         let _ = state_tmp.repo.save(&user, &conn);
-    }
+    }*/
 
     let app = Router::new()
         .route("/start_timer", post(start_timer))

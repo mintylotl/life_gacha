@@ -5,7 +5,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Simple helper to talk to your Rust server
 
 function get_userid() {
-  return "testing";
+  return "axol999";
 }
 
 interface Reward {

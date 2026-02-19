@@ -5,7 +5,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Simple helper to talk to your Rust server
 
 function get_userid() {
-  return "axol999";
+  return "testing";
 }
 
 interface Reward {
@@ -149,15 +149,15 @@ class RewardManager {
                   </div>
               </div>
 
-              <h2 class="mt-8 text-3xl font-black text-white tracking-tighter uppercase">Reward Claimed!</h2>
-              <p class="mt-2 text-slate-400 font-medium">You have successfully received:</p>
+              <h2 class="mt-8 text-3xl font-black text-white tracking-tighter uppercase">Rewards Received!</h2>
+              <p class="mt-2 text-slate-400 font-medium">Rewards:</p>
 
               <div class="my-6 space-y-3">
                   ${listItems}
               </div>
 
               <button id="btn-${this.id}" class="w-full py-4 ${theme.btnBg} text-slate-900 font-black rounded-xl active:scale-95 transition-all shadow-lg ${theme.btnShadow}">
-                  CONFIRM & CONTINUE
+                  CLAIM
               </button>
           </div>
       </div>
@@ -166,9 +166,10 @@ class RewardManager {
     document.body.insertAdjacentHTML("beforeend", modalHtml);
     this.modalEl = document.getElementById(`reward-modal-${this.id}`);
 
-    document
-      .getElementById(`btn-${this.id}`)
-      ?.addEventListener("click", () => this.destroy());
+    document.getElementById(`btn-${this.id}`)?.addEventListener("click", () => {
+      this.destroy();
+      queryUserFunds();
+    });
 
     requestAnimationFrame(() => {
       this.modalEl?.classList.remove("opacity-0");
@@ -188,6 +189,178 @@ class RewardManager {
       this.modalEl?.remove();
       this.modalEl = null;
     }, 300);
+  }
+}
+
+interface ISRDORequest {
+  description: string;
+  coeff: number;
+  userid: string;
+}
+interface ISRDOResponse {
+  description: string;
+  payout: number;
+  uuid: string;
+}
+
+async function isrdo(desc: string, coeff: number) {
+  let payload: ISRDORequest = {
+    description: desc,
+    coeff: coeff,
+    userid: get_userid(),
+  };
+
+  try {
+    let response = await fetch(`${API_BASE}/isrdo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    let data: ISRDOResponse = await response.json();
+
+    if (response.ok) {
+      console.log(`${data.uuid}`);
+
+      console.log(
+        `created ISRDO ${data.description} with payout: ${data.payout}`,
+      );
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+setTimeout(() => {
+  document.querySelector("#isrdo-close")?.addEventListener("click", () => {
+    document.querySelector("#isrdo")?.classList.add("hidden");
+  });
+  document
+    .querySelector("#isrdo-window-closebtn")
+    ?.addEventListener("click", () => {
+      document.querySelector("#isrdo-window")?.classList.add("hidden");
+    });
+  document.querySelector("#isrdo-submit")?.addEventListener("click", () => {
+    const isrdowindow = document.getElementById("isrdo");
+    const isrdo_close = document.querySelector("#isrdo-close");
+
+    let textarea = document.getElementById(
+      "isrdo-submit-text",
+    ) as HTMLTextAreaElement;
+    let coeff_inp = document.getElementById("isrdo-coeff") as HTMLInputElement;
+
+    let text = textarea.value;
+    let coeff = parseFloat(coeff_inp.value);
+    if (isrdowindow) {
+      isrdo(text, coeff);
+      textarea.value = "";
+    }
+
+    isrdo_close.click();
+  });
+
+  document.querySelector("#do-isrdo-dos")?.addEventListener("click", () => {
+    document.getElementById("isrdo-window")?.classList.remove("hidden");
+    get_isrdos();
+  });
+  document.querySelector("#do-isrdo")?.addEventListener("click", () => {
+    document.getElementById("isrdo")?.classList.remove("hidden");
+  });
+}, 300);
+
+interface ISRDO {
+  uuid: string;
+  description: string;
+  payout: number;
+}
+
+async function construct_isrdo_node(
+  desc: string,
+  payout: number,
+  uuid: string,
+) {
+  const currentnodes = document.querySelectorAll(".isrdonodes");
+  let should_end = false;
+
+  if (currentnodes) {
+    currentnodes.forEach((node) => {
+      if (node.id === `isrdo-node-${uuid}`) {
+        should_end = true;
+        return;
+      }
+    });
+  }
+
+  if (should_end) {
+    return;
+  }
+
+  const node = `
+<div id="isrdo-node-${uuid}" class="isrdonodes group flex items-start gap-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 transition-all hover:border-indigo-500/30 hover:bg-slate-950/80">
+  <div class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-700 group-hover:bg-indigo-500 transition-colors"></div>
+
+  <div class="flex-grow">
+    <p class="text-sm leading-relaxed text-slate-300 group-hover:text-slate-100">
+      ${desc}
+    </p>
+    <span class="mt-2 block text-[10px] font-medium uppercase tracking-tighter text-slate-600">
+      Payout: ${payout} FLUX
+    </span>
+  </div>
+
+<button onclick="isrdo_complete('${uuid}')" class="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:text-slate-600 text-emerald-400 md:hover:text-emerald-400 transition-all">
+    <svg class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+  </button>
+</div>
+`;
+
+  document
+    .querySelector("#isrdo-list-container")
+    ?.insertAdjacentHTML("beforeend", node);
+}
+
+(window as any).isrdo_complete = async function isrdo_complete(uuid: string) {
+  let payload = { userid: get_userid(), uuid: uuid };
+  try {
+    const response = await fetch(`${API_BASE}/isrdo_complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+      const node = document.querySelector(`#isrdo-node-${uuid}`);
+      if (node) {
+        node.remove();
+        queryUserFunds();
+
+        new RewardManager([{ reward_type: "Flux", amount: data }]);
+      }
+    }
+  } catch (err) {
+    console.error(err);
+  }
+};
+
+async function get_isrdos() {
+  try {
+    const response = await fetch(`${API_BASE}/get_isrdos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(get_userid()),
+    });
+
+    let data: ISRDO[] = await response.json();
+
+    if (response.ok) {
+      data.forEach(async (isrdo) => {
+        await construct_isrdo_node(isrdo.description, isrdo.payout, isrdo.uuid);
+      });
+    }
+  } catch (err) {
+    console.error(err);
   }
 }
 
@@ -229,33 +402,43 @@ interface ConsumeRequest {
 
   let path = "/consume";
   let payload: ConsumeRequest = { userid: get_userid(), uuid };
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-
-  if (voucher) {
-    // 1. Lock the current dimensions so it doesn't jump
-    const rect = voucher.getBoundingClientRect();
-    voucher.style.width = `${rect.width}px`;
-    voucher.style.height = `${rect.height}px`;
-
-    // 2. Animate the element away
-    // We use scale-0 and a width/margin-0 to force the grid to "shrink" the hole
-    voucher.classList.add("transition-all", "duration-500", "ease-in-out");
-
-    requestAnimationFrame(() => {
-      voucher.classList.add("scale-0", "opacity-0", "w-0", "h-0", "m-0", "p-0");
-      voucher.style.width = "0px"; // Force the grid gap to close
-      voucher.style.margin = "0px";
+  try {
+    await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
 
-    // 3. Clean up the DOM
-    setTimeout(() => {
-      voucher.remove();
-    }, 500);
+    if (voucher) {
+      // 1. Lock the current dimensions so it doesn't jump
+      const rect = voucher.getBoundingClientRect();
+      voucher.style.width = `${rect.width}px`;
+      voucher.style.height = `${rect.height}px`;
+
+      // 2. Animate the element away
+      // We use scale-0 and a width/margin-0 to force the grid to "shrink" the hole
+      voucher.classList.add("transition-all", "duration-500", "ease-in-out");
+
+      requestAnimationFrame(() => {
+        voucher.classList.add(
+          "scale-0",
+          "opacity-0",
+          "w-0",
+          "h-0",
+          "m-0",
+          "p-0",
+        );
+        voucher.style.width = "0px"; // Force the grid gap to close
+        voucher.style.margin = "0px";
+      });
+
+      // 3. Clean up the DOM
+      setTimeout(() => {
+        voucher.remove();
+      }, 500);
+    }
+  } catch (err) {
+    console.error(err);
   }
 };
 
@@ -565,7 +748,7 @@ async function apiActionGetVouchers(
 async function flip_new(uuid: string) {
   let payload = uuid;
   try {
-    let response = await fetch(`${API_BASE}/remove_new_logo`, {
+    await fetch(`${API_BASE}/remove_new_logo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -580,13 +763,11 @@ async function flip_new(uuid: string) {
   payload.amount = 1;
 
   try {
-    let response = await fetch(`${API_BASE}/purchase`, {
+    await fetch(`${API_BASE}/purchase`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-
-    let data = await response.json();
 
     new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
   } catch (err) {
@@ -785,7 +966,6 @@ async function delete_voucher(uuid: string): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    let data = await response.json();
 
     if (response.ok) {
       return true;
@@ -805,7 +985,6 @@ async function custom_voucher(id: number, amount: number) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    let data = await response.json();
 
     if (response.ok) {
       new RewardManager([
@@ -826,7 +1005,7 @@ async function apiActionPull10(path: string) {
 
   if (button) {
     button.outerHTML = `
-    <button id="pull10-btn" disabled class="w-full py-4 bg-slate-700/50 cursor-not-allowed rounded-xl font-bold text-lg text-slate-500 border border-slate-600/30">
+    <button id="pull10-btn" disabled class="w-full py-3 md:py-4 bg-slate-700/50 cursor-not-allowed rounded-xl font-bold md:text-lg text-base text-slate-500 border border-slate-600/30">
       Pull x10
     </button>`;
   }
@@ -849,7 +1028,7 @@ async function apiActionPull10(path: string) {
         </div>`;
 
       for (let i = 0; i < 10; i++) {
-        tup_result = await apiActionPull(path, [25, 250]);
+        tup_result = await apiActionPull(path, [25, 250], false);
         vouchers = vouchers + Number(tup_result.vouchers);
 
         if (tup_result.result === "NoTickets") {
@@ -949,6 +1128,7 @@ interface RewardTup {
 async function apiActionPull(
   path: string,
   delay: number[],
+  showVouchers: boolean,
 ): Promise<RewardTup> {
   const display = document.getElementById("pull-display-single");
 
@@ -970,7 +1150,7 @@ async function apiActionPull(
         } else {
           display.innerHTML = `
           <div id="shuffler" class="text-3xl font-black text-white"></div>
-          <div id="sss" class="from-white to-red-400 bg-gradient-to-r animate-shake text-transparent bg-clip-text text-3xl font-black"></div>
+          <div id="myth" class="from-white to-red-400 bg-gradient-to-r animate-shake text-transparent bg-clip-text text-3xl font-black"></div>
           <div id="s" class="from-white to-yellow-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-3xl font-black"></div>
           <div id="a" class="from-green-300 to-purple-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-3xl font-black"></div>
           <div id="b" class="from-blue-400 to-blue-600 bg-gradient-to-r text-transparent animate-pulse bg-clip-text text-3xl font-black"></div>`;
@@ -990,7 +1170,7 @@ async function apiActionPull(
 
           switch (data.result) {
             case "Mythic":
-              document.getElementById("sss")!.innerText = "MYTHIC SSS";
+              document.getElementById("myth")!.innerText = "MYTHIC SSS";
               break;
 
             case "S":
@@ -1014,6 +1194,10 @@ async function apiActionPull(
       }
     }
     queryUserFunds();
+
+    if (showVouchers) {
+      new RewardManager([{ reward_type: "Vouchers", amount: data.vouchers }]);
+    }
     return { result: data.result, vouchers: data.vouchers };
   } catch (err) {
     if (display) display.innerText = "Error: Server Offline";
@@ -1054,6 +1238,7 @@ async function apiActionTimer(path: string, payload: TimerRequest) {
               category: "SNode",
             }),
           );
+          new RewardManager([{ reward_type: "Astrum", amount: data.reward }]);
         } else {
           display.innerHTML = `<div class="animate-pulse">${data.status}</div>`;
         }
@@ -1174,15 +1359,23 @@ const modaldivcontent = `
 `;
 
 // MAIN CONTENT
-// MAIN CONTENT
 document.querySelector("#app")!.innerHTML = `
 <section id="home-page" class="transition-opacity duration-500 flex justify-center w-full px-4 md:px-0 min-w-[400px] ">
 <div class="flex flex-row md:flex-col fixed top-4 md:top-8 right-4 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
-  <button id="store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+  <button id="store" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     STORE
   </button>
-  <button id="stock" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+  <button id="stock" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     INVENTORY
+  </button>
+</div>
+
+<div class="flex flex-row md:flex-col fixed top-4 md:top-8 left-4 md:left-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-left">
+  <button id="do-isrdo-dos" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    ISRDO DOS
+  </button>
+  <button id="do-isrdo" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    ISRDO
   </button>
 </div>
 
@@ -1194,7 +1387,7 @@ document.querySelector("#app")!.innerHTML = `
           LIFE GACHA
         </h1>
         <h1 class="text-xl md:text-3sm font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-cyan-400">
-          Axol
+          ${get_userid().toUpperCase()}
         </h1>
       </div>
       <p id="user-funds-display" class="text-slate-400 text-xs md:text-sm mt-1 uppercase tracking-widest">Funds: 0</p>
@@ -1269,7 +1462,7 @@ document.querySelector("#app")!.innerHTML = `
         <h1 class="text-xl md:text-2xl font-black text-white tracking-widest font-mono">INVENTORY</h1>
     </div>
     <div class="flex flex-row md:flex-col fixed top-2 md:top-8 right-2 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
-      <button id="home" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+      <button id="home" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         HOME
       </button>
     </div>
@@ -1291,10 +1484,10 @@ document.querySelector("#app")!.innerHTML = `
         <h1 class="text-xl md:text-2xl font-black text-white tracking-widest font-mono">STORE</h1>
     </div>
     <div class="flex flex-row md:flex-col fixed top-2 md:top-8 right-2 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
-      <button id="home-from-store" class="hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+      <button id="home-from-store" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         HOME
       </button>
-      <button id="create" class="md:mt-4 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+      <button id="create" class="md:mt-4 md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         CREATE
       </button>
     </div>
@@ -1415,12 +1608,99 @@ document.querySelector("#app")!.innerHTML = `
     </div>
   </div>
 </div>
+</div>
+
+<div id="isrdo" class="fixed inset-0 z-[100] flex items-end justify-center p-4 pb-10 sm:items-center hidden">
+
+  <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-md transition-opacity"></div>
+
+  <div class="relative z-[110] flex h-[33vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-900/90 shadow-[0_20px_50px_rgba(0,0,0,0.5)] ring-1 ring-white/10">
+
+    <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-indigo-500 to-transparent opacity-50"></div>
+
+    <div class="flex h-full flex-col p-4 md:p-6">
+
+      <div class="mb-3 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="h-2 w-2 rounded-full bg-indigo-500 animate-pulse"></div>
+          <h2 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+            ISRDO <span class="text-slate-600">/</span> <span class="text-indigo-400">Draft</span>
+          </h2>
+        </div>
+        <button id="isrdo-close" class="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <textarea
+        autofocus
+        id="isrdo-submit-text"
+        class="w-full flex-grow resize-none rounded-xl border border-slate-800 bg-slate-950/50 p-3 text-base text-slate-200 placeholder-slate-600 transition-all focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
+        placeholder="I should really do..."
+      ></textarea>
+
+      <div class="mt-4 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-2 group">
+          <label for="isrdo-priority" class="text-[10px] font-bold uppercase tracking-widest text-slate-500 group-focus-within:text-indigo-400 transition-colors">Coefficient</label>
+          <input
+            type="number"
+            id="isrdo-coeff"
+            step="0.24"
+            min="1.0"
+            max="1.96"
+            placeholder="1.0"
+            class="w-20 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 text-center font-mono text-sm text-indigo-400 placeholder-slate-700 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition-all"
+          />
+        </div>
+
+        <button id="isrdo-submit" class="group relative flex items-center gap-2 overflow-hidden rounded-lg bg-emerald-600 px-5 py-2 text-sm font-bold text-white transition-all hover:bg-emerald-500 active:scale-95 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
+          <span>Submit</span>
+          <svg class="h-4 w-4 transition-transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="isrdo-window" class="fixed inset-0 z-[100] flex items-end justify-center p-4 pb-6 sm:items-center hidden">
+
+  <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-md"></div>
+
+  <div class="relative z-[110] flex h-[66vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700/50 bg-slate-900/90 shadow-[0_20px_50px_rgba(0,0,0,0.6)] ring-1 ring-white/10">
+
+    <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-500 to-transparent opacity-50"></div>
+
+    <div class="flex items-center justify-between border-b border-slate-800 p-4">
+      <div class="flex items-center gap-2">
+        <div class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+        <h2 class="font-mono text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+          ISRDO <span class="text-slate-600">/</span> <span class="text-emerald-400">Archive</span>
+        </h2>
+      </div>
+      <span class="text-[10px] font-medium text-slate-500 uppercase">Recent 8 Items</span>
+    </div>
+
+    <div id="isrdo-list-container" class="flex-grow overflow-y-auto p-3 space-y-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      </div>
+
+    <div class="border-t border-slate-800 bg-slate-900/50 p-3 flex justify-center">
+       <button id="isrdo-window-closebtn" class="text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-indigo-400 transition-colors">
+         Close Viewer
+       </button>
+    </div>
+  </div>
+</div>
 `;
 
 // Event Listeners
 document
   .querySelector("#pull-btn")
-  ?.addEventListener("click", () => apiActionPull("/pull", [30, 750]));
+  ?.addEventListener("click", () => apiActionPull("/pull", [30, 750], true));
 
 document
   .querySelector("#pull10-btn")
@@ -1467,6 +1747,12 @@ document.querySelector("#home-from-store")?.addEventListener("click", () => {
 });
 
 document
+  .querySelector("#isrdo-window-closebtn")
+  ?.addEventListener("click", () => {
+    document.getElementById("isrdo-window")?.classList.add("hidden");
+  });
+
+document
   .querySelector("#dailies-claimall")
   ?.addEventListener("click", async () => {
     let astrai = 0;
@@ -1474,7 +1760,6 @@ document
     let flux = 0;
 
     let buttons = document.querySelectorAll(".claim-btn")!;
-    const refreshbtn = document.getElementById("refresh-dailies");
 
     for (const button of buttons) {
       try {
@@ -1525,6 +1810,8 @@ document
       },
     ]);
   });
+
+/*
 class RewardModal {
   private el: HTMLElement;
   public id: string;
@@ -1552,7 +1839,7 @@ class RewardModal {
     }
   }
 }
-
+*/
 function generateRandomString(length: number = 12): string {
   const characters =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012456789";
@@ -1563,6 +1850,7 @@ function generateRandomString(length: number = 12): string {
   return result;
 }
 
+/*
 async function makeRewardModal(): Promise<RewardModal> {
   const randomId = generateRandomString(12);
   let modal = `
@@ -1602,7 +1890,7 @@ async function makeRewardModal(): Promise<RewardModal> {
     randomId,
     document.getElementById(`reward-modal-${randomId}`)!,
   );
-}
+}*/
 
 interface DailiesReward {
   dailies: Daily[];
@@ -1684,7 +1972,7 @@ async function runTask() {
       }
     }, 200);
 
-    await sleep(15000);
+    await sleep(45000);
   }
 }
 runTask();
@@ -1792,6 +2080,7 @@ setTimeout(() => {
   updateHUD();
 }, 100);
 
+/*
 function showReward(id: string, reward_type: string, amount: string) {
   const modal = document.getElementById(`reward-modal-${id}`);
   const container = document.getElementById(`reward-container-${id}`);
@@ -1814,6 +2103,7 @@ function showReward(id: string, reward_type: string, amount: string) {
     container.classList.add("scale-100");
   }, 10);
 }
+*/
 
 (window as any).closeRewardModal = function closeRewardModal(id: string) {
   const modal = document.getElementById(`reward-modal-${id}`);

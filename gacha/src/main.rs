@@ -1,6 +1,5 @@
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::AppendHeaders;
 use axum::{Json, Router, routing::post};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
@@ -194,6 +193,13 @@ enum Category {
     BNode,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+struct ISRDO {
+    uuid: uuid::Uuid,
+    description: String,
+    payout: u16,
+}
+
 trait UserRepo {
     fn load<'a>(
         &'a self,
@@ -215,6 +221,7 @@ struct User {
     templates: Vec<Voucher>,
     active_timer: bool,
     timer: Option<Timer>,
+    isrdos: Vec<ISRDO>,
     sss_pity: u16,
     s_pity: u16,
     a_pity: u16,
@@ -272,7 +279,7 @@ impl SqliteRepo {
     }*/
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let init = false;
+        let init = true;
         let user = User {
             id: UserId("testing".to_string()),
             astrum: 1600,
@@ -293,6 +300,7 @@ impl SqliteRepo {
             username: "Test User".to_string(),
             vouchers: Vec::<Voucher>::new(),
             templates: Voucher::get_templates(),
+            isrdos: Vec::<ISRDO>::new(),
         };
 
         let _ = conn.execute(
@@ -631,12 +639,12 @@ fn resolve_timer(timer: Timer) -> u64 {
     }
 
     match timer.category {
-        Category::SNode => reward = ((minutes as f64 / 60.0) * 240.0) as i64,
+        Category::SNode => reward = ((minutes as f64 / 60.0) * 480.0) as i64,
         Category::ANode => {
             reward = ((minutes as f64 / 30.0) as f64 * 120.0) as i64;
         }
         Category::BNode => {
-            reward = ((minutes as f64 / 10.0) as f64 * 60.0) as i64;
+            reward = ((minutes as f64 / 10.0) as f64 * 25.0) as i64;
         }
     }
 
@@ -972,6 +980,81 @@ async fn dailies(
 }
 
 #[derive(Deserialize)]
+struct ISRDORequest {
+    userid: String,
+    description: String,
+    coeff: f32,
+}
+#[derive(Serialize)]
+struct ISRDOResponse {
+    description: String,
+    payout: u16,
+    uuid: uuid::Uuid,
+}
+async fn isrdo(
+    State(state): State<AppState>,
+    Json(req): Json<ISRDORequest>,
+) -> Result<Json<ISRDOResponse>, StatusCode> {
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+    let payout: u16 = (req.coeff.min(1.72) * 72.0) as u16;
+
+    if user.flux < 80 || user.isrdos.len() == 8 || req.description.is_empty() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let isrdo = ISRDO {
+        description: req.description.clone(),
+        payout: payout,
+        uuid: uuid::Uuid::now_v7(),
+    };
+
+    user.isrdos.push(isrdo.clone());
+    let _ = state.repo.save(&user, &conn);
+
+    Ok(Json(ISRDOResponse {
+        description: req.description,
+        uuid: isrdo.uuid,
+        payout: isrdo.payout,
+    }))
+}
+
+async fn get_isrdos(
+    State(state): State<AppState>,
+    Json(req): Json<String>,
+) -> Result<Json<Vec<ISRDO>>, StatusCode> {
+    let (user, _conn) = load_user(req.clone(), &state)?;
+    if user.isrdos.len() < 1 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(Json(user.isrdos))
+}
+
+#[derive(Deserialize)]
+struct ISRDOCompleteReq {
+    userid: String,
+    uuid: uuid::Uuid,
+}
+async fn isrdo_complete(
+    State(state): State<AppState>,
+    Json(req): Json<ISRDOCompleteReq>,
+) -> Result<Json<i128>, StatusCode> {
+    let (mut user, conn) = load_user(req.userid, &state)?;
+    let mut payout: i128 = 0;
+
+    if let Some(isrdo) = user.isrdos.iter_mut().find(|i| i.uuid == req.uuid) {
+        payout = isrdo.payout as i128;
+        user.isrdos.retain(|f| f.uuid != req.uuid);
+
+        user.flux += payout;
+        let _ = state.repo.save(&user, &conn);
+
+        return Ok(Json(payout));
+    }
+
+    Err(StatusCode::NOT_FOUND)
+}
+
+#[derive(Deserialize)]
 struct InfoRequest {
     userid: String,
 }
@@ -1009,7 +1092,7 @@ async fn remove_new_logo(
 }
 
 fn get_username() -> String {
-    "axol999".to_string()
+    "testing".to_string()
 }
 
 #[tokio::main]
@@ -1027,7 +1110,7 @@ async fn main() {
 
         //user.dailies = Daily::init();
 
-        user.templates = Voucher::get_templates();
+        //user.templates = Voucher::get_templates();
 
         let _ = state_tmp.repo.save(&user, &conn);
     }*/
@@ -1045,6 +1128,9 @@ async fn main() {
         .route("/remove_new_logo", post(remove_new_logo))
         .route("/delete_storeitem", post(delete_storeitem))
         .route("/create_advanced", post(create_advanced))
+        .route("/isrdo", post(isrdo))
+        .route("/get_isrdos", post(get_isrdos))
+        .route("/isrdo_complete", post(isrdo_complete))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

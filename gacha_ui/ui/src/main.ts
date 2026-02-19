@@ -242,7 +242,9 @@ setTimeout(() => {
     });
   document.querySelector("#isrdo-submit")?.addEventListener("click", () => {
     const isrdowindow = document.getElementById("isrdo");
-    const isrdo_close = document.querySelector("#isrdo-close");
+    const isrdo_close = document.querySelector(
+      "#isrdo-close",
+    ) as HTMLButtonElement;
 
     let textarea = document.getElementById(
       "isrdo-submit-text",

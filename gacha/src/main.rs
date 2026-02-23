@@ -1,7 +1,7 @@
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::{Json, Router, routing::post};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use axum::{Json, Router, routing::get, routing::post};
+use chrono::{DateTime, Datelike, Duration, DurationRound, TimeZone, Timelike, Utc};
 use gacha_protocol::{self, PityCtx, Rarities, roll};
 use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
@@ -9,8 +9,10 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Error as serdeError;
 use serde_json::{self};
+use std::collections::HashMap;
 use std::ops::Index;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration as Duration_Time;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -40,9 +42,6 @@ struct Voucher {
     description: String,
 }
 impl Voucher {
-    fn flip_new(v: Self) -> Self {
-        Self { new: false, ..v }
-    }
     fn by_id(id: u64, userid: &str, state: Option<&AppState>) -> Result<Self, PersistenceError> {
         match id {
             999 => Ok(Self::mythic_week()),
@@ -359,7 +358,7 @@ struct Timer {
     id: String,
     owner: UserId,
     started: DateTime<Utc>,
-    ended: Option<i64>,
+    ended: Option<DateTime<Utc>>,
     category: Category,
 }
 impl TimerResponse {
@@ -407,7 +406,7 @@ struct AppState {
 fn load_user(
     userid: String,
     state: &AppState,
-) -> Result<(User, MutexGuard<Connection>), StatusCode> {
+) -> Result<(User, MutexGuard<'_, Connection>), StatusCode> {
     Ok(state
         .repo
         .load(UserId(userid))
@@ -440,10 +439,9 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                 vouchers.push(Voucher::off_day());
 
                 for _x in 0..3 {
-                    vouchers.push(Voucher::coffee());
                     vouchers.push(Voucher::japanese());
                 }
-                rw_vouchers += 9;
+                rw_vouchers += 6;
                 user.has_slip = true;
             }
         }
@@ -451,18 +449,11 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.s_pity = 0;
             user.sss_pity += 1;
             user.a_pity += 1;
-            user.flux += 360;
-            user.total_flux_aq += 360;
+            user.flux += 240;
+            user.total_flux_aq += 240;
 
             if quick_roll() < 64 {
-                vouchers.push(Voucher::new(
-                    24,
-                    uuid::Uuid::now_v7(),
-                    "Japanese [3H]".into(),
-                    150,
-                    true,
-                    "Study Japanese for 3 Hours".into(),
-                ));
+                vouchers.push(Voucher::japanese());
                 rw_vouchers += 1;
             } else {
                 vouchers.push(Voucher::new(
@@ -475,22 +466,17 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                 ));
                 rw_vouchers += 1;
             }
-            if quick_roll() < 85 {
+            if quick_roll() < 16 {
                 vouchers.push(Voucher::new(
-                    9,
+                    24,
                     uuid::Uuid::now_v7(),
-                    "Gacha Slip [2H]".into(),
+                    "Japanese [4H]".into(),
                     180,
                     true,
-                    "Permission Slip to Work on LifeGacha for 2 Hours".into(),
+                    "Study Japanese for 4 Hours".into(),
                 ));
                 rw_vouchers += 1;
             }
-            if quick_roll() < 85 {
-                vouchers.push(Voucher::coffee());
-                rw_vouchers += 1;
-            }
-
             if quick_roll() < 16 {
                 vouchers.push(Voucher::gaming());
                 rw_vouchers += 1;
@@ -504,23 +490,25 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.flux += 120;
             user.total_flux_aq += 120;
 
-            vouchers.push(Voucher::new(
-                0,
-                uuid::Uuid::now_v7(),
-                "15 Minute Break".into(),
-                35,
-                true,
-                "Take a 15 minute breather break".into(),
-            ));
-            rw_vouchers += 1;
+            if quick_roll() < 200 {
+                vouchers.push(Voucher::new(
+                    0,
+                    uuid::Uuid::now_v7(),
+                    "15 Minute Break".into(),
+                    35,
+                    true,
+                    "Take a 15 minute breather break".into(),
+                ));
+                rw_vouchers += 1;
+            }
         }
         Rarities::B => {
             user.sss_pity += 1;
             user.s_pity += 1;
             user.a_pity += 1;
 
-            user.flux += 10;
-            user.total_flux_aq += 10;
+            user.flux += 5;
+            user.total_flux_aq += 5;
 
             if quick_roll() == 24 {
                 vouchers.push(Voucher::gaming());
@@ -572,8 +560,7 @@ async fn start_timer(
     State(state): State<AppState>,
     Json(req): Json<TimerRequest>,
 ) -> Result<Json<TimerResponse>, StatusCode> {
-    println!("{}, {:?}", req.userid, req.category);
-    let (mut user, conn) = load_user(req.userid, &state)?;
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
 
     if user.active_timer {
         return Ok(Json(TimerResponse::already_exists(
@@ -587,6 +574,57 @@ async fn start_timer(
         started: Utc::now(),
         id: gen_timer_id(),
         owner: user.id.clone(),
+    });
+
+    let timer_mv = user.timer.clone().unwrap();
+    let state_mv = state.clone();
+    let userid = req.userid.clone();
+    tokio::spawn(async move {
+        let timer = timer_mv;
+        let state = state_mv;
+        let now = Utc::now();
+        let userid = userid;
+
+        loop {
+            let overflow = match timer.category {
+                Category::SNode => {
+                    if now.hour() - timer.started.hour() >= 2 {
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Category::ANode => {
+                    if now.hour() - timer.started.hour() >= 1 {
+                        true
+                    } else {
+                        false
+                    }
+                }
+                Category::BNode => {
+                    if (now - timer.started).num_minutes() >= 30 {
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
+            if overflow {
+                let (mut user, conn) = load_user(userid.clone(), &state).unwrap();
+                if user.timer.is_none() {
+                    return;
+                }
+
+                let mut timer_stored = user.timer.unwrap();
+                timer_stored.ended = Some(Utc::now());
+
+                user.timer = Some(timer_stored);
+                let _ = state.repo.save(&user, &conn);
+                break;
+            }
+
+            let _ = tokio::time::sleep(std::time::Duration::from_mins(1)).await;
+        }
     });
 
     user.active_timer = true;
@@ -629,11 +667,17 @@ async fn stop_timer(
     }))
 }
 fn resolve_timer(timer: Timer) -> u64 {
-    let duration = Utc::now() - timer.started;
+    let reward: i64;
+    let duration: Duration;
+
+    if let Some(ended) = timer.ended {
+        duration = ended - timer.started;
+    } else {
+        duration = Utc::now() - timer.started;
+    }
+
     let hours = duration.num_hours();
     let minutes = duration.num_minutes();
-    let mut reward: i64 = 0;
-
     if hours < 1 && minutes < 1 {
         return 0;
     }
@@ -792,7 +836,7 @@ async fn consume(
 fn decrease_flux(user: &mut User, amount: i128) {
     user.flux -= amount;
 
-    if user.dailies[3].last_claimed < Daily::cycle() {
+    if user.dailies[3].last_claimed < Daily::cycle(0) {
         user.todays_flux.1 += amount as u64;
     }
 }
@@ -846,7 +890,7 @@ struct Daily {
 impl Daily {
     fn init() -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
-        for i in 0..4 {
+        for i in 0..5 {
             vec.push(Daily {
                 id: i as u8,
                 claimable: true,
@@ -855,13 +899,14 @@ impl Daily {
             });
         }
         vec[3].claimable = false;
+        vec[4].claimable = false;
 
         vec
     }
-    fn cycle() -> i64 {
+    fn cycle(offset: u8) -> i64 {
         let now = Utc::now();
         let mut cycle_start = Utc
-            .with_ymd_and_hms(now.year(), now.month(), now.day(), 4, 0, 0)
+            .with_ymd_and_hms(now.year(), now.month(), now.day(), 4 + offset as u32, 0, 0)
             .unwrap();
 
         if now < cycle_start {
@@ -883,18 +928,23 @@ struct DailiesResp {
     astrum: u16,
     flux: u16,
     astrai: u16,
+    vouchers: u16,
 }
 async fn dailies(
     State(state): State<AppState>,
     Json(req): Json<DailiesReq>,
 ) -> Result<Json<DailiesResp>, StatusCode> {
     let (mut user, conn) = load_user(req.userid.clone(), &state)?;
-    let (mut rw_astrum, mut rw_flux, mut rw_astrai) = (0, 0, 0);
+    let (mut rw_astrum, mut rw_flux, mut rw_astrai, mut rw_vouchers) = (0, 0, 0, 0);
     let mut ok = false;
 
     if req.info {
         for daily in user.dailies.iter_mut() {
-            if daily.last_claimed >= Daily::cycle() {
+            if daily.id == 4 {
+                break;
+            }
+
+            if daily.last_claimed >= Daily::cycle(0) {
                 daily.claimable = false;
                 daily.claimed = true;
             } else {
@@ -913,9 +963,10 @@ async fn dailies(
 
         ok = true;
     }
-    if req.id < 4 && !req.info && user.dailies[req.id as usize].last_claimed < Daily::cycle() {
+    if (req.id < 4 && !req.info) && user.dailies[req.id as usize].last_claimed < Daily::cycle(0) {
         user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
         user.dailies[req.id as usize].claimed = true;
+        user.dailies[req.id as usize].claimable = false;
 
         if req.id == 3 && user.todays_flux.1 < 500 {
             return Err(StatusCode::FORBIDDEN);
@@ -958,12 +1009,31 @@ async fn dailies(
         if user.dailies.iter().all(|f| f.claimed) {
             user.astrum += 100;
             user.astrai += 2;
+            user.flux += 100;
 
             rw_astrum += 100;
             rw_astrai += 2;
             rw_flux += 100;
         }
+        ok = true;
+    }
+    if req.id == 4 && user.dailies[4].claimable {
+        user.dailies[req.id as usize].claimable = false;
+        user.dailies[req.id as usize].claimed = true;
 
+        user.astrum += 1600;
+        user.vouchers.push(Voucher::gaming());
+        rw_astrum += 1600;
+        rw_vouchers += 1;
+
+        if user.dailies.iter().all(|f| f.claimed) {
+            user.astrum += 100;
+            user.astrai += 2;
+
+            rw_astrum += 100;
+            rw_astrai += 2;
+            rw_flux += 100;
+        }
         ok = true;
     }
 
@@ -974,6 +1044,7 @@ async fn dailies(
             astrum: rw_astrum,
             flux: rw_flux,
             astrai: rw_astrai,
+            vouchers: rw_vouchers,
         }));
     }
     Err(StatusCode::FORBIDDEN)
@@ -996,7 +1067,7 @@ async fn isrdo(
     Json(req): Json<ISRDORequest>,
 ) -> Result<Json<ISRDOResponse>, StatusCode> {
     let (mut user, conn) = load_user(req.userid.clone(), &state)?;
-    let payout: u16 = (req.coeff.min(1.72) * 72.0) as u16;
+    let payout: u16 = (req.coeff.min(4.96) * 80.0 * 1.24) as u16;
 
     if user.flux < 80 || user.isrdos.len() == 8 || req.description.is_empty() {
         return Err(StatusCode::FORBIDDEN);
@@ -1009,6 +1080,7 @@ async fn isrdo(
     };
 
     user.isrdos.push(isrdo.clone());
+    decrease_flux(&mut user, 80_i128);
     let _ = state.repo.save(&user, &conn);
 
     Ok(Json(ISRDOResponse {
@@ -1039,7 +1111,7 @@ async fn isrdo_complete(
     Json(req): Json<ISRDOCompleteReq>,
 ) -> Result<Json<i128>, StatusCode> {
     let (mut user, conn) = load_user(req.userid, &state)?;
-    let mut payout: i128 = 0;
+    let payout: i128;
 
     if let Some(isrdo) = user.isrdos.iter_mut().find(|i| i.uuid == req.uuid) {
         payout = isrdo.payout as i128;
@@ -1052,6 +1124,68 @@ async fn isrdo_complete(
     }
 
     Err(StatusCode::NOT_FOUND)
+}
+
+async fn seven_am_unlock(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<StatusCode, StatusCode> {
+    let (mut user, conn) = load_user(get_username(), &state)?;
+    let master_key = "X0jItR1QFt38i7kTbexFE2p0pRkrgJmiJdveRmzwl2HazYMQLQRorQg70dVFxcU3WJmpw3qjupACFQTRMJMQh51fcqFTdRIMq5EHS8Ce2e9mq9AAs6B9EA0XuNPQiVrlflCWKy9UGk7StrTh";
+
+    match params.get("key") {
+        Some(val) => {
+            if val != master_key {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+        None => {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    }
+
+    let daily = &mut user.dailies[4];
+
+    let current_time_utc = Utc::now();
+    let current_timestmp = current_time_utc.timestamp();
+
+    let cutoff_start = Utc
+        .with_ymd_and_hms(
+            current_time_utc.year(),
+            current_time_utc.month(),
+            current_time_utc.day(),
+            11,
+            0,
+            0,
+        )
+        .unwrap()
+        .timestamp();
+    let cutoff = Utc
+        .with_ymd_and_hms(
+            current_time_utc.year(),
+            current_time_utc.month(),
+            current_time_utc.day(),
+            11,
+            15,
+            0,
+        )
+        .unwrap()
+        .timestamp();
+
+    if daily.last_claimed < cutoff_start
+        && current_timestmp > cutoff_start
+        && current_timestmp < cutoff
+    {
+        daily.claimable = true;
+        daily.claimed = false;
+    }
+
+    let _ = state
+        .repo
+        .save(&user, &conn)
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
@@ -1108,10 +1242,9 @@ async fn main() {
         //    f.new = true;
         //});
 
-        //user.dailies = Daily::init();
+        user.dailies = Daily::init();
+        user.todays_flux.1 = 0;
 
-        //user.templates = Voucher::get_templates();
-        user.isrdos = Vec::<ISRDO>::new();
         let _ = state_tmp.repo.save(&user, &conn);
     }*/
 
@@ -1131,6 +1264,7 @@ async fn main() {
         .route("/isrdo", post(isrdo))
         .route("/get_isrdos", post(get_isrdos))
         .route("/isrdo_complete", post(isrdo_complete))
+        .route("/7am_unlock", get(seven_am_unlock))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

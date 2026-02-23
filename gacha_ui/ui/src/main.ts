@@ -240,26 +240,31 @@ setTimeout(() => {
     ?.addEventListener("click", () => {
       document.querySelector("#isrdo-window")?.classList.add("hidden");
     });
-  document.querySelector("#isrdo-submit")?.addEventListener("click", () => {
-    const isrdowindow = document.getElementById("isrdo");
-    const isrdo_close = document.querySelector(
-      "#isrdo-close",
-    ) as HTMLButtonElement;
+  document
+    .querySelector("#isrdo-submit")
+    ?.addEventListener("click", async () => {
+      const isrdowindow = document.getElementById("isrdo");
+      const isrdo_close = document.querySelector(
+        "#isrdo-close",
+      ) as HTMLButtonElement;
 
-    let textarea = document.getElementById(
-      "isrdo-submit-text",
-    ) as HTMLTextAreaElement;
-    let coeff_inp = document.getElementById("isrdo-coeff") as HTMLInputElement;
+      let textarea = document.getElementById(
+        "isrdo-submit-text",
+      ) as HTMLTextAreaElement;
+      let coeff_inp = document.getElementById(
+        "isrdo-coeff",
+      ) as HTMLInputElement;
 
-    let text = textarea.value;
-    let coeff = parseFloat(coeff_inp.value);
-    if (isrdowindow) {
-      isrdo(text, coeff);
-      textarea.value = "";
-    }
+      let text = textarea.value;
+      let coeff = parseFloat(coeff_inp.value);
+      if (isrdowindow) {
+        isrdo(text, coeff);
+        textarea.value = "";
+      }
 
-    isrdo_close.click();
-  });
+      await queryUserFunds();
+      isrdo_close.click();
+    });
 
   document.querySelector("#do-isrdo-dos")?.addEventListener("click", () => {
     document.getElementById("isrdo-window")?.classList.remove("hidden");
@@ -1036,15 +1041,15 @@ async function apiActionPull10(path: string) {
         if (tup_result.result === "NoTickets") {
           break;
         }
-        if (tup_result.result === "Mythic") {
+        if (tup_result.result === "MythicSSS") {
           mythic += 1;
           flux += 2400;
 
           display.innerHTML = `
-          <div class="flex flex-col gap-6 items-center justify-around">
+          <div class="flex flex-col gap-6 items-center justify-around transition-all">
 
-          <div class="from-white to-red-500 bg-gradient-to-r text-transparent bg-clip-text text-3xl animate-shake">
-            MYTHIC
+          <div class="from-white to-red-500 bg-gradient-to-r text-transparent bg-clip-text text-3xl animate-shake duration-800">
+            MYTHIC SSS
           </div>
           </div>`;
           await sleep(8000);
@@ -1171,7 +1176,7 @@ async function apiActionPull(
           shuffler.innerText = "";
 
           switch (data.result) {
-            case "Mythic":
+            case "MythicSSS":
               document.getElementById("myth")!.innerText = "MYTHIC SSS";
               break;
 
@@ -1441,12 +1446,13 @@ document.querySelector("#app")!.innerHTML = `
 
         <div class="text-right">
             <span id="dailies-count" class="text-lg md:text-xl font-black text-emerald-400">
-                0<span class="text-slate-600">/4</span>
+                0<span class="text-slate-600">/5</span>
             </span>
         </div>
     </div>
 
     <div id="dailies-pips" class="flex gap-1 md:gap-2 h-1.5 w-full">
+        <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
         <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
         <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
         <div class="flex-1 bg-slate-800 rounded-full transition-all duration-500"></div>
@@ -1530,6 +1536,14 @@ document.querySelector("#app")!.innerHTML = `
                     <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Establish connection to the Astrai network.</p>
                 </div>
                 <button id="dailyA" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-emerald-600 text-slate-900 hover:bg-emerald-400 active:scale-95">Claim</button>
+            </div>
+
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">7AM Init</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Claim Drop Between 7:00 and 7:15am</p>
+                </div>
+                <button disabled id="dailyE" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
 
             <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
@@ -1649,9 +1663,6 @@ document.querySelector("#app")!.innerHTML = `
           <input
             type="number"
             id="isrdo-coeff"
-            step="0.24"
-            min="1.0"
-            max="1.96"
             placeholder="1.0"
             class="w-20 rounded-lg border border-slate-800 bg-slate-950 px-2 py-1.5 text-center font-mono text-sm text-indigo-400 placeholder-slate-700 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 transition-all"
           />
@@ -1899,9 +1910,10 @@ interface DailiesReward {
   astrum: number;
   astrai: number;
   flux: number;
+  vouchers: number;
 }
 async function prepareDailies() {
-  let dailiesArr = ["dailyA", "dailyB", "dailyC", "dailyD"];
+  let dailiesArr = ["dailyA", "dailyB", "dailyC", "dailyD", "dailyE"];
 
   dailiesArr.forEach(async (id, index) => {
     let button_elem = document.getElementById(id);
@@ -1945,6 +1957,10 @@ async function prepareDailies() {
             {
               reward_type: "Flux",
               amount: data.flux,
+            },
+            {
+              reward_type: "Voucher",
+              amount: data.vouchers,
             },
           ]);
         } else {
@@ -2003,11 +2019,10 @@ refreshBtn.addEventListener("click", async () => {
     updateHUD();
 
     let inc = 0;
-    let dailiesArr = ["dailyA", "dailyB", "dailyC", "dailyD"];
+    let dailiesArr = ["dailyA", "dailyB", "dailyC", "dailyD", "dailyE"];
     dailies.forEach((daily) => {
-      inc++;
       const button = document.getElementById(
-        dailiesArr[inc - 1],
+        dailiesArr[inc],
       )! as HTMLButtonElement;
 
       if (daily.claimable && !daily.claimed) {
@@ -2017,6 +2032,7 @@ refreshBtn.addEventListener("click", async () => {
       } else if (!daily.claimable && !daily.claimed) {
         updateDailyButton(button, "locked");
       }
+      inc++;
     });
 
     // 3. Success state
@@ -2059,11 +2075,12 @@ async function updateHUD() {
   const dailies_json = await dailies_f.json();
   const dailies: Daily[] = dailies_json.dailies;
   const completedCount = dailies.filter((d) => d.claimed).length;
+  const amount = dailies.filter((d) => d.id < 100).length;
 
   // 1. Target by ID instead of generic classes
   const counter = document.getElementById("dailies-count");
   if (counter) {
-    counter.innerHTML = `${completedCount}<span class="text-slate-600">/4</span>`;
+    counter.innerHTML = `${completedCount}<span class="text-slate-600">/${amount}</span>`;
   }
 
   // 2. Target pips specifically within the container ID

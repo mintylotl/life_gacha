@@ -157,8 +157,8 @@ impl Voucher {
         Self {
             id: 999,
             uuid: uuid::Uuid::now_v7(),
-            cost: 35480,
             name: "Mythic Week Off".to_string(),
+            cost: 35480,
             new: true,
             description: "Get a full week off".to_string(),
         }
@@ -167,8 +167,8 @@ impl Voucher {
         Self {
             id: 1,
             uuid: uuid::Uuid::now_v7(),
-            cost: 5720,
             name: String::from("Full Day Off"),
+            cost: 5720,
             new: true,
             description: String::from("Get one full day off"),
         }
@@ -180,8 +180,8 @@ impl Voucher {
         Self {
             id: 2,
             uuid: uuid::Uuid::now_v7(),
-            cost,
             name: format!("Gaming Session ({}H)", hours),
+            cost,
             new: true,
             description: format!("{} Hour Gaming Session", hours),
         }
@@ -193,8 +193,8 @@ impl Voucher {
         Self {
             id: 3,
             uuid: uuid::Uuid::now_v7(),
-            cost,
             name: String::from("Gacha Slip (2H)"),
+            cost,
             new: true,
             description: format!(
                 "Permission Slip for Working on the Gacha Machine for {} Hours",
@@ -206,8 +206,8 @@ impl Voucher {
         Self {
             id: 4,
             uuid: uuid::Uuid::now_v7(),
-            cost: 150,
             name: String::from("Coffee (Premium)"),
+            cost: 150,
             new: true,
             description: String::from("Get 1 cup of Premium Coffee (250ml)"),
         }
@@ -216,8 +216,8 @@ impl Voucher {
         Self {
             id: 5,
             uuid: uuid::Uuid::now_v7(),
-            cost: 75,
             name: String::from("Coffee (Standard)"),
+            cost: 75,
             new: true,
             description: String::from("Get 1 cup of Coffee Standard (250ml)"),
         }
@@ -228,8 +228,8 @@ impl Voucher {
         Self {
             id: 24,
             uuid: uuid::Uuid::now_v7(),
-            cost,
             name: String::from("Japanese Studies (3H)"),
+            cost,
             new: true,
             description: format!("Slip to study Japanese for {} Hours", hours),
         }
@@ -1333,18 +1333,22 @@ async fn pause_dripper(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<StatusCode, StatusCode> {
-    let (mut user, conn) = load_user(params.get("userid").unwrap().to_string(), &state)?;
-    let ok = Ok(StatusCode::OK);
-    let acc = Ok(StatusCode::ACCEPTED);
+    let (mut user, conn) = load_user(
+        params
+            .get("userid")
+            .ok_or(StatusCode::NOT_FOUND)?
+            .to_string(),
+        &state,
+    )?;
 
     if user.pause_drip {
         user.pause_drip = false;
         save_user(&user, &conn, &state)?;
-        return acc;
+        Ok(StatusCode::ACCEPTED)
     } else {
         user.pause_drip = true;
         save_user(&user, &conn, &state)?;
-        return ok;
+        Ok(StatusCode::OK)
     }
 }
 
@@ -1357,7 +1361,7 @@ async fn main() {
     let repo = SqliteRepo::new("userdata.sql");
     let state = AppState { repo: repo.into() };
 
-    /*{
+    {
         let state_tmp = state.clone();
 
         let (mut user, conn) = load_user(get_username(), &state_tmp).unwrap();
@@ -1367,10 +1371,14 @@ async fn main() {
 
         //user.dailies = Daily::init();
         //user.todays_flux.1 = 0;
-        //user.templates = Voucher::get_templates();
+        user.templates = Voucher::get_templates();
+
+        for template in &user.templates {
+            println!("{:?}", template);
+        }
 
         let _ = state_tmp.repo.save(&user, &conn);
-    }*/
+    }
 
     drip(state.clone());
 

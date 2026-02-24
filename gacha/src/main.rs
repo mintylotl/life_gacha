@@ -1,8 +1,7 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get, routing::post};
-use chrono::{DateTime, Datelike, Duration, DurationRound, TimeZone, Timelike, Utc};
-use gacha_protocol::{self, PityCtx, Rarities, roll};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
 use rusqlite::{Connection, params};
@@ -12,9 +11,13 @@ use serde_json::{self};
 use std::collections::HashMap;
 use std::ops::Index;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration as Duration_Time;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+
+// Custom Types
+use Coeff::*;
+use gacha_protocol::{self, PityCtx, Rarities, roll};
+use std::time::Duration as Duration_Time;
 
 #[derive(thiserror::Error, Debug)]
 enum PersistenceError {
@@ -41,16 +44,54 @@ struct Voucher {
     new: bool,
     description: String,
 }
+#[derive(Clone)]
+enum Coeff {
+    PureC(f64, u32),
+    FunG(f64, u32),
+    G(f64, u32),
+    Expansion(f64, u32),
+}
+impl Coeff {
+    fn get_val(&self) -> u64 {
+        if let PureC(coeff, base_cost) = self {
+            return (*coeff * *base_cost as f64) as u64;
+        }
+        if let FunG(coeff, base_cost) = self {
+            return (*coeff * *base_cost as f64) as u64;
+        }
+        if let G(coeff, base_cost) = self {
+            return (*coeff * *base_cost as f64) as u64;
+        }
+        if let Expansion(coeff, base_cost) = self {
+            return (*coeff * *base_cost as f64) as u64;
+        }
+
+        return 0;
+    }
+    fn pure_c() -> Self {
+        Self::PureC(1.76, 120)
+    }
+    fn fun_g() -> Self {
+        Self::FunG(1.48, 120)
+    }
+    fn g() -> Self {
+        Self::G(1.24, 120)
+    }
+    fn exp() -> Self {
+        Self::Expansion(0.72, 120)
+    }
+}
+
 impl Voucher {
     fn by_id(id: u64, userid: &str, state: Option<&AppState>) -> Result<Self, PersistenceError> {
         match id {
             999 => Ok(Self::mythic_week()),
             1 => Ok(Self::off_day()),
-            2 => Ok(Self::gaming()),
-            3 => Ok(Self::slip_gacha()),
+            2 => Ok(Self::gaming(2)),
+            3 => Ok(Self::slip_gacha(1)),
             4 => Ok(Self::coffee()),
             5 => Ok(Self::coffee_standard()),
-            24 => Ok(Self::japanese()),
+            24 => Ok(Self::japanese(2)),
             _ => {
                 if userid.is_empty() {
                     return Err(PersistenceError::InvalidIDVoucher);
@@ -116,7 +157,7 @@ impl Voucher {
         Self {
             id: 999,
             uuid: uuid::Uuid::now_v7(),
-            cost: 24192,
+            cost: 35480,
             name: "Mythic Week Off".to_string(),
             new: true,
             description: "Get a full week off".to_string(),
@@ -126,31 +167,38 @@ impl Voucher {
         Self {
             id: 1,
             uuid: uuid::Uuid::now_v7(),
-            cost: 3200,
+            cost: 5720,
             name: String::from("Full Day Off"),
             new: true,
             description: String::from("Get one full day off"),
         }
     }
-    fn gaming() -> Self {
+    fn gaming(hours: u32) -> Self {
+        let coeff = Coeff::pure_c().get_val();
+        let cost = coeff * hours as u64;
+
         Self {
             id: 2,
             uuid: uuid::Uuid::now_v7(),
-            cost: 285,
-            name: String::from("Gaming Session (2H)"),
+            cost,
+            name: format!("Gaming Session ({}H)", hours),
             new: true,
-            description: String::from("2 Hour Gaming Session"),
+            description: format!("{} Hour Gaming Session", hours),
         }
     }
-    fn slip_gacha() -> Self {
+    fn slip_gacha(hours: u32) -> Self {
+        let coeff = Coeff::fun_g().get_val();
+        let cost = coeff * hours as u64;
+
         Self {
             id: 3,
             uuid: uuid::Uuid::now_v7(),
-            cost: 180,
+            cost,
             name: String::from("Gacha Slip (2H)"),
             new: true,
-            description: String::from(
-                "Permission Slip for Working on the Gacha Machine for 2 Hours",
+            description: format!(
+                "Permission Slip for Working on the Gacha Machine for {} Hours",
+                hours
             ),
         }
     }
@@ -174,14 +222,16 @@ impl Voucher {
             description: String::from("Get 1 cup of Coffee Standard (250ml)"),
         }
     }
-    fn japanese() -> Self {
+    fn japanese(hours: u32) -> Self {
+        let coeff = Coeff::exp().get_val();
+        let cost = coeff * hours as u64;
         Self {
             id: 24,
             uuid: uuid::Uuid::now_v7(),
-            cost: 160,
+            cost,
             name: String::from("Japanese Studies (3H)"),
             new: true,
-            description: String::from("Slip to study Japanese for 3 Hours"),
+            description: format!("Slip to study Japanese for {} Hours", hours),
         }
     }
 }
@@ -219,6 +269,7 @@ struct User {
     vouchers: Vec<Voucher>,
     templates: Vec<Voucher>,
     active_timer: bool,
+    pause_drip: bool,
     timer: Option<Timer>,
     isrdos: Vec<ISRDO>,
     sss_pity: u16,
@@ -300,6 +351,7 @@ impl SqliteRepo {
             vouchers: Vec::<Voucher>::new(),
             templates: Voucher::get_templates(),
             isrdos: Vec::<ISRDO>::new(),
+            pause_drip: false,
         };
 
         let _ = conn.execute(
@@ -413,6 +465,17 @@ fn load_user(
         .map_err(|_| StatusCode::NOT_FOUND)?)
 }
 
+fn save_user(
+    user: &User,
+    conn: &MutexGuard<'_, Connection>,
+    state: &AppState,
+) -> Result<(), StatusCode> {
+    Ok(state
+        .repo
+        .save(user, conn)
+        .map_err(|_| StatusCode::NOT_FOUND)?)
+}
+
 fn quick_roll() -> u8 {
     let mut rng = rng();
     let roll: u8 = rng.random();
@@ -434,12 +497,12 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                 vouchers.push(Voucher::mythic_week());
                 rw_vouchers += 1;
             } else {
-                vouchers.push(Voucher::gaming());
-                vouchers.push(Voucher::gaming());
+                vouchers.push(Voucher::gaming(2_u32));
+                vouchers.push(Voucher::gaming(2_u32));
                 vouchers.push(Voucher::off_day());
 
                 for _x in 0..3 {
-                    vouchers.push(Voucher::japanese());
+                    vouchers.push(Voucher::japanese(4_u32));
                 }
                 rw_vouchers += 6;
                 user.has_slip = true;
@@ -453,32 +516,19 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.total_flux_aq += 240;
 
             if quick_roll() < 64 {
-                vouchers.push(Voucher::japanese());
+                vouchers.push(Voucher::japanese(2_u32));
                 rw_vouchers += 1;
             } else {
-                vouchers.push(Voucher::new(
-                    24,
-                    uuid::Uuid::now_v7(),
-                    "Japanese [1H]".into(),
-                    50,
-                    true,
-                    "Study Japanese for 1 Hour".into(),
-                ));
+                vouchers.push(Voucher::japanese(1_32));
+                rw_vouchers += 1;
+            }
+
+            if quick_roll() < 16 {
+                vouchers.push(Voucher::japanese(4u32));
                 rw_vouchers += 1;
             }
             if quick_roll() < 16 {
-                vouchers.push(Voucher::new(
-                    24,
-                    uuid::Uuid::now_v7(),
-                    "Japanese [4H]".into(),
-                    180,
-                    true,
-                    "Study Japanese for 4 Hours".into(),
-                ));
-                rw_vouchers += 1;
-            }
-            if quick_roll() < 16 {
-                vouchers.push(Voucher::gaming());
+                vouchers.push(Voucher::gaming(2_u32));
                 rw_vouchers += 1;
             }
         }
@@ -487,7 +537,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.sss_pity += 1;
             user.s_pity += 1;
 
-            user.flux += 120;
+            user.flux += 72;
             user.total_flux_aq += 120;
 
             if quick_roll() < 200 {
@@ -495,7 +545,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                     0,
                     uuid::Uuid::now_v7(),
                     "15 Minute Break".into(),
-                    35,
+                    (Coeff::pure_c().get_val() as f64 * 0.25) as u64,
                     true,
                     "Take a 15 minute breather break".into(),
                 ));
@@ -507,11 +557,11 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.s_pity += 1;
             user.a_pity += 1;
 
-            user.flux += 5;
+            user.flux += 7;
             user.total_flux_aq += 5;
 
             if quick_roll() == 24 {
-                vouchers.push(Voucher::gaming());
+                vouchers.push(Voucher::gaming(4));
                 rw_vouchers += 1;
             }
         }
@@ -568,6 +618,21 @@ async fn start_timer(
         )));
     }
 
+    if let Some(ref timer) = user.timer {
+        let dur = match timer.category {
+            Category::SNode => 45,
+            _ => 20,
+        };
+        if timer.ended.is_some() {
+            let timeout = Duration::minutes(dur as i64);
+            let duration = Utc::now() - timer.ended.unwrap();
+
+            if duration < timeout {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
     user.timer = Some(Timer {
         category: req.category,
         ended: None,
@@ -582,20 +647,21 @@ async fn start_timer(
     tokio::spawn(async move {
         let timer = timer_mv;
         let state = state_mv;
-        let now = Utc::now();
         let userid = userid;
+        let mut now: DateTime<Utc>;
 
         loop {
+            now = Utc::now();
             let overflow = match timer.category {
                 Category::SNode => {
-                    if now.hour() - timer.started.hour() >= 2 {
+                    if (now - timer.started).num_hours() >= 2 {
                         true
                     } else {
                         false
                     }
                 }
                 Category::ANode => {
-                    if now.hour() - timer.started.hour() >= 1 {
+                    if (now - timer.started).num_hours() >= 1 {
                         true
                     } else {
                         false
@@ -650,11 +716,10 @@ async fn stop_timer(
         )));
     }
 
-    let timer: Timer = user.timer.unwrap();
+    let timer: Timer = user.timer.clone().unwrap();
     let reward = Some(resolve_timer(timer.clone()));
 
     user.active_timer = false;
-    user.timer = None;
     user.astrum += reward.unwrap();
     user.total_astrum_aq += reward.unwrap() as u128;
 
@@ -1020,9 +1085,10 @@ async fn dailies(
     if req.id == 4 && user.dailies[4].claimable {
         user.dailies[req.id as usize].claimable = false;
         user.dailies[req.id as usize].claimed = true;
+        user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
 
         user.astrum += 1600;
-        user.vouchers.push(Voucher::gaming());
+        user.vouchers.push(Voucher::gaming(1));
         rw_astrum += 1600;
         rw_vouchers += 1;
 
@@ -1225,6 +1291,63 @@ async fn remove_new_logo(
     Ok(Json("Flipped".into()))
 }
 
+fn drip(b_state: AppState) {
+    tokio::spawn(async {
+        let state = b_state;
+        let mut faucet_failure = false;
+        let mut drip_rate: i128 = 0;
+
+        let mut interval = tokio::time::interval(Duration_Time::from_mins(5));
+        loop {
+            interval.tick().await;
+            let (mut user, conn) = load_user(get_username(), &state).unwrap();
+
+            if user.pause_drip {
+                continue;
+            }
+
+            if Utc::now().hour() >= 3 && Utc::now().hour() < 6 {
+                drip_rate = 0;
+                faucet_failure = false;
+            }
+
+            if faucet_failure {
+                drip_rate = drip_rate.max(320);
+            } else if drip_rate >= 320 {
+                faucet_failure = true;
+            }
+
+            if !user.active_timer {
+                user.flux -= drip_rate;
+                drip_rate += 24
+            } else if drip_rate >= 24 {
+                drip_rate -= 24
+            }
+
+            let _ = state.repo.save(&user, &conn);
+        }
+    });
+}
+
+async fn pause_dripper(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<StatusCode, StatusCode> {
+    let (mut user, conn) = load_user(params.get("userid").unwrap().to_string(), &state)?;
+    let ok = Ok(StatusCode::OK);
+    let acc = Ok(StatusCode::ACCEPTED);
+
+    if user.pause_drip {
+        user.pause_drip = false;
+        save_user(&user, &conn, &state)?;
+        return acc;
+    } else {
+        user.pause_drip = true;
+        save_user(&user, &conn, &state)?;
+        return ok;
+    }
+}
+
 fn get_username() -> String {
     "axol999".to_string()
 }
@@ -1242,11 +1365,14 @@ async fn main() {
         //    f.new = true;
         //});
 
-        user.dailies = Daily::init();
-        user.todays_flux.1 = 0;
+        //user.dailies = Daily::init();
+        //user.todays_flux.1 = 0;
+        //user.templates = Voucher::get_templates();
 
         let _ = state_tmp.repo.save(&user, &conn);
     }*/
+
+    drip(state.clone());
 
     let app = Router::new()
         .route("/start_timer", post(start_timer))
@@ -1265,6 +1391,7 @@ async fn main() {
         .route("/get_isrdos", post(get_isrdos))
         .route("/isrdo_complete", post(isrdo_complete))
         .route("/7am_unlock", get(seven_am_unlock))
+        .route("/pause_dripper", get(pause_dripper))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

@@ -1,11 +1,49 @@
 import "./style.css";
 
-const API_BASE = "http://11.0.0.2:3000";
+const API_BASE = "https://11.0.0.2:37399";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Simple helper to talk to your Rust server
 
+function det_id() {
+  let device_id = localStorage.getItem("device_id");
+
+  if (device_id) {
+    init();
+    return;
+  }
+
+  let div = document.createElement("div");
+  div.innerHTML = usermodal;
+  document.body.appendChild(div);
+
+  document
+    .querySelector("#userid-form")
+    ?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      let form = new FormData(
+        document.querySelector("#userid-form") as HTMLFormElement,
+      );
+
+      localStorage.setItem("device_id", form.get("userid") as string);
+
+      document.querySelector("#user-modal")?.remove();
+    });
+
+  init();
+}
 function get_userid() {
-  return "axol999";
+  // Check if we already have an ID
+  let deviceId = localStorage.getItem("device_id");
+  let userid = "axol999";
+
+  if (deviceId) {
+    userid = deviceId;
+    console.log("Inside");
+  }
+
+  console.log("Device Identity:", deviceId);
+  return userid;
 }
 
 interface Reward {
@@ -410,12 +448,16 @@ interface ConsumeRequest {
   let path = "/consume";
   let payload: ConsumeRequest = { userid: get_userid(), uuid };
   try {
-    await fetch(`${API_BASE}${path}`, {
+    let resp = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
+    if (resp.ok === false) {
+      button_timedout(uuid);
+      return;
+    }
     if (voucher) {
       // 1. Lock the current dimensions so it doesn't jump
       const rect = voucher.getBoundingClientRect();
@@ -468,8 +510,10 @@ async function goHome(store: boolean) {
     }, 50);
   }
 }
-async function queryUserFunds() {
+async function queryUserFunds(): Promise<boolean> {
   let funds_screen = document.getElementById("user-funds-display");
+  let FlowButton = document.querySelector("#flow") as HTMLButtonElement;
+
   let path = "/user_funds_info";
   let payload = { userid: get_userid() };
   try {
@@ -480,13 +524,23 @@ async function queryUserFunds() {
     });
 
     let data = await response.json();
+    let dripstate = "";
+    if (data.dripstate) {
+      dripstate = "Blocked";
+      FlowButton.innerText = "FLOW";
+    } else {
+      dripstate = "Flowing";
+      FlowButton.innerText = "NOFLO";
+    }
 
     if (funds_screen) {
-      funds_screen.innerText = `Astrum: ${data.astrum}\nAstrai: ${data.astrai}\nFlux: ${data.flux}`;
+      funds_screen.innerText = `Drip State: ${dripstate}\nAstrum: ${data.astrum}\nAstrai: ${data.astrai}\nFlux: ${data.flux}`;
+      return data.dripstate;
     }
   } catch (err) {
     console.log(err);
   }
+  return false;
 }
 
 interface CreateRequest {
@@ -494,8 +548,8 @@ interface CreateRequest {
   voucher: ReqVoucher;
 }
 interface ReqVoucher {
-  id: number;
-  cost: number;
+  hours: number;
+  coeff: string;
   name: string;
   description: string;
 }
@@ -509,6 +563,46 @@ interface Voucher {
   description: string;
 }
 
+async function apiActionBuyVoucher(path: string) {
+  const modal = document.getElementById("buy-modal");
+
+  const formElem = document.getElementById("buy-form") as HTMLFormElement;
+
+  if (modal) {
+    formElem.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      try {
+        const formData = new FormData(formElem);
+        const voucher_p: ReqVoucher = {
+          coeff: formData.get("coeff") as string,
+          name: formData.get("name") as string,
+          description: formData.get("description") as string,
+          hours: Number(formData.get("hours")),
+        };
+        let payload: CreateRequest = {
+          userid: get_userid(),
+          voucher: voucher_p,
+        };
+        const response = await fetch(`${API_BASE}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.ok) {
+          await sleep(750);
+          (window as any).closeModal();
+        } else {
+          switch_svg();
+        }
+      } catch (err) {
+        console.log(err);
+        switch_svg();
+      }
+    });
+  }
+}
 async function apiActionCreateVoucher(path: string) {
   const modal_div = document.getElementById("modaldiv");
   if (modal_div) {
@@ -537,10 +631,10 @@ async function apiActionCreateVoucher(path: string) {
       try {
         const formData = new FormData(formElem);
         const voucher_p: ReqVoucher = {
-          id: Number(formData.get("id")),
-          cost: Number(formData.get("cost")),
+          coeff: formData.get("coeff") as string,
           name: formData.get("name") as string,
           description: formData.get("description") as string,
+          hours: Number(formData.get("hours")),
         };
         let payload: CreateRequest = {
           userid: get_userid(),
@@ -605,24 +699,28 @@ async function switch_svg() {
 (window as any).closeModal = function closeModal() {
   document.getElementById("create-modal")?.remove();
 };
+(window as any).closeBuyModal = function closeModal() {
+  document.getElementById("buy-modal")?.remove();
+};
 
 async function apiActionGetTemplates(path: string, payload: object) {
-  apiActionGetVouchers(path, true, payload);
+  apiActionGetVouchers(path, true, payload, false);
 }
 
 async function apiActionGetVouchers(
   path: string,
   store: boolean,
   payload: object,
-) {
+  fetched: boolean,
+): Promise<Voucher[]> {
   let page_name = "";
-  let funcName = "";
+  let buttonText = "";
   if (store) {
     page_name = "store";
-    funcName = "purchase";
+    buttonText = "BUY";
   } else {
     page_name = "stock";
-    funcName = "consume";
+    buttonText = "REDEEM";
   }
 
   const home = document.getElementById("home-page");
@@ -631,18 +729,20 @@ async function apiActionGetVouchers(
 
   let vouchers_obsv: Voucher[] = [];
 
-  const observer = new IntersectionObserver((entries, observerInstance) => {
-    entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        // TRIGGER YOUR LOGIC HERE
-        flip_new(entry.target.id as string);
+  const observer = new IntersectionObserver(
+    async (entries, observerInstance) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          // TRIGGER YOUR LOGIC HERE
+          flip_new(entry.target.id as string);
 
-        // STOP WATCHING
-        observerInstance.unobserve(entry.target);
-        // or observerInstance.disconnect(); to stop watching EVERYTHING
-      }
-    });
-  });
+          // STOP WATCHING
+          observerInstance.unobserve(entry.target);
+          // or observerInstance.disconnect(); to stop watching EVERYTHING
+        }
+      });
+    },
+  );
 
   try {
     let response = await fetch(`${API_BASE}${path}`, {
@@ -651,16 +751,34 @@ async function apiActionGetVouchers(
       body: JSON.stringify(payload),
     });
     let data_v: Voucher[] = await response.json();
-    data_v.sort((a, b) => a.id - b.id);
+    data_v.sort((a, b) => {
+      return a.name.localeCompare(b.name) || a.id - b.id;
+    });
 
+    if (fetched) {
+      return data_v;
+    }
     if (boxes) {
+      (window as any).chainer_store = function chainer_store(
+        id: number,
+        uuid: string,
+      ) {
+        (window as any).purchase(id, uuid, true);
+      };
+
+      (window as any).chainer = async function chainer(uuid: string) {
+        (window as any).consume(uuid);
+
+        if (!(await queryUserFunds())) toggleFlow();
+      };
+
       boxes.innerHTML = "";
       data_v.forEach((voucher) => {
         let buttonPrefix;
         if (store) {
-          buttonPrefix = `onclick="${funcName}(${voucher.id}, '${voucher.uuid}')"`;
+          buttonPrefix = `onclick="chainer_store(${voucher.id}, '${voucher.uuid}')"`;
         } else {
-          buttonPrefix = `onclick="${funcName}('${voucher.uuid}')"`;
+          buttonPrefix = `onclick="chainer('${voucher.uuid}')"`;
         }
 
         let is_new = `
@@ -697,7 +815,7 @@ async function apiActionGetVouchers(
               </div>
 
               <p class="text-slate-400 leading-relaxed text-xs md:text-sm flex-1 overflow-y-auto md:overflow-hidden italic">
-                "${voucher.description}"
+                 ${voucher.description}
               </p>
 
               <div class="mt-auto pt-3 md:pt-4 border-t border-slate-600/50">
@@ -707,7 +825,7 @@ async function apiActionGetVouchers(
               </div>
 
               <button ${buttonPrefix} class="mt-3 md:mt-4 w-full bg-emerald-600 text-slate-900 font-black py-2.5 md:py-3 rounded-xl hover:bg-emerald-400 active:scale-95 transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20">
-                <span class="text-sm md:text-base">REDEEM</span>
+                <span class="text-sm md:text-base">${buttonText}</span>
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 md:h-5 md:w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-8.707l-3-3a1 1 0 00-1.414 1.414L10.586 9H7a1 1 0 100 2h3.586l-1.293 1.293a1 1 0 101.414 1.414l3-3a1 1 0 000-1.414z" clip-rule="evenodd" />
                 </svg>
@@ -723,7 +841,14 @@ async function apiActionGetVouchers(
           voucherEle?.addEventListener("contextmenu", (e) => {
             e.preventDefault();
 
-            showVoucherCtx(e, voucher.uuid, Number(voucher.id));
+            showVoucherCtx(e, true, voucher.uuid, Number(voucher.id));
+          });
+        } else {
+          const voucherEle = document.getElementById!(voucher.uuid);
+          voucherEle?.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+
+            showVoucherCtx(e, false, voucher.uuid, Number(voucher.id));
           });
         }
 
@@ -750,6 +875,7 @@ async function apiActionGetVouchers(
   } catch (err) {
     console.log(err);
   }
+  return [];
 }
 
 async function flip_new(uuid: string) {
@@ -765,42 +891,95 @@ async function flip_new(uuid: string) {
   }
 }
 
-(window as any).purchase = async function purchase(id: number, uuid: string) {
-  let payload = { id, userid: get_userid(), amount: 0 };
+(window as any).purchase = async function purchase(
+  id: number,
+  uuid: string,
+  normal: boolean,
+) {
+  let payload = { id, userid: get_userid(), amount: 0, hours: 0 };
   payload.amount = 1;
+  payload.hours = 1;
 
-  try {
-    await fetch(`${API_BASE}/purchase`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+  let templates: Voucher[] = await apiActionGetVouchers(
+    "/get_user_vouchers",
+    true,
+    {
+      userid: get_userid(),
+      filter_by_id: 0,
+      request_all: true,
+      store: true,
+    },
+    true,
+  );
+  if (normal) {
+    try {
+      let resp = await fetch(`${API_BASE}/purchase`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (resp.ok) {
+        new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
+      } else {
+        button_err(uuid);
+      }
+    } catch (err) {
+      console.log(err);
+    }
+    return;
+  }
+
+  let ele = document.createElement("div");
+  ele.insertAdjacentHTML("afterbegin", buymodal);
+  document.body.appendChild(ele);
+
+  let modal = document.querySelector("#buy-modal");
+
+  if (modal) {
+    let div = modal.querySelector("#buymodalselect") as HTMLSelectElement;
+    templates.forEach((template) => {
+      div?.insertAdjacentHTML(
+        "beforeend",
+        `<option value="${template.id}">${template.name}</option>`,
+      );
     });
 
-    new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
-  } catch (err) {
-    console.log(err);
+    div.value = id.toString();
 
-    const buyButton = document.getElementById(uuid)!.querySelector("button")!;
-    let text = buyButton.innerText;
+    modal.querySelector("#buy-form")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
 
-    buyButton.disabled = true;
-    buyButton.classList.replace("text-slate-900", "text-white");
-    buyButton.classList.replace("bg-emerald-600", "bg-red-500");
-    buyButton.classList.remove("hover:bg-emerald-400");
-    buyButton.classList.add("animate-shake", "duration-100", "transition-all");
-    buyButton.innerText = "Insufficient Funds!";
+      try {
+        let form = document.querySelector("#buy-form") as HTMLFormElement;
+        let formdata = new FormData(form);
 
-    setTimeout(() => {
-      buyButton.classList.replace("text-white", "text-slate-900");
-      buyButton.classList.replace("bg-red-500", "bg-emerald-600");
-      buyButton.classList.remove("animate-shake");
-      buyButton.classList.add("hover:bg-emerald-400");
-      buyButton.innerText = text;
-      buyButton.disabled = false;
-    }, 1000);
+        if (formdata) {
+          payload.id = Number(formdata.get("voucherid"));
+          payload.hours = Number(formdata.get("hours"));
+        }
+        console.log(payload.hours);
+        let resp = await fetch(`${API_BASE}/purchase`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (resp.ok) {
+          new RewardManager([
+            { reward_type: "Voucher", amount: payload.amount },
+          ]);
+        }
+      } catch (err) {
+        console.log(err);
+      }
+    });
   }
 };
-async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
+async function showVoucherCtx(
+  e: MouseEvent,
+  mode: boolean,
+  voucherId: string,
+  id: number,
+) {
   // 1. Prevent the default browser menu
   e.preventDefault();
 
@@ -823,8 +1002,19 @@ async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
   menu.style.left = `${e.clientX}px`;
   menu.style.top = `${e.clientY}px`;
 
-  // 5. Build the rows
-  menu.innerHTML = `
+  if (!mode) {
+    // 5. Build the rows
+    menu.innerHTML = `
+      <button id="ctx-delete-${voucherId}" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-semibold text-sky-400 hover:bg-sky-500/10 rounded-lg transition-colors group">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:-translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+        </svg>
+        Refund Voucher
+      </button>
+    `;
+  } else {
+    // 5. Build the rows
+    menu.innerHTML = `
     <button id="ctx-delete-${voucherId}" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-semibold text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors group">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -838,11 +1028,35 @@ async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
       <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
       </svg>
-      Advanced Buy
+      Buy (Bulk)
+    </button>
+
+    <div class="h-px bg-slate-700/50 my-1"></div>
+
+    <button id="ctx-buy-${voucherId}" class="w-full flex items-center gap-3 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 rounded-lg transition-colors group">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 group-hover:rotate-12 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+      </svg>
+      Buy
     </button>
   `;
+  }
 
   document.body.appendChild(menu);
+
+  const voucher = document.getElementById(voucherId);
+  let deleteVoucher = menu.querySelector(`#ctx-delete-${voucherId}`);
+  deleteVoucher?.addEventListener("click", async () => {
+    let condition = await delete_voucher(voucherId, mode);
+    if (condition === true) {
+      voucher?.remove();
+    }
+  });
+
+  let BuyVoucher = menu.querySelector(`#ctx-buy-${voucherId}`);
+  BuyVoucher?.addEventListener("click", async () => {
+    (window as any).purchase(id, voucherId, false);
+  });
 
   // 6. Handle closing the menu when clicking elsewhere
   const closeMenu = () => {
@@ -858,7 +1072,9 @@ async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
     document.addEventListener("wheel", closeMenu); // Close on scroll for better UX
   }, 10);
 
-  const voucher = document.getElementById(voucherId);
+  if (!mode) {
+    return;
+  }
 
   let customVoucher = menu.querySelector(`#ctx-custom-${voucherId}`);
   customVoucher?.addEventListener("click", () => {
@@ -955,26 +1171,60 @@ async function showVoucherCtx(e: MouseEvent, voucherId: string, id: number) {
     buyBtn.addEventListener("click", buy);
     openSliderModal();
   });
-
-  let deleteVoucher = menu.querySelector(`#ctx-delete-${voucherId}`);
-  deleteVoucher?.addEventListener("click", async () => {
-    let condition = await delete_voucher(voucherId);
-    if (condition === true) {
-      voucher?.remove();
-    }
-  });
 }
-async function delete_voucher(uuid: string): Promise<boolean> {
-  let payload = { userid: get_userid(), uuid: uuid };
+async function button_err(uuid: string) {
+  const buyButton = document.getElementById(uuid)!.querySelector("button")!;
+  let innerH = buyButton.innerHTML;
+
+  buyButton.disabled = true;
+  buyButton.classList.replace("text-slate-900", "text-white");
+  buyButton.classList.replace("bg-emerald-600", "bg-red-500");
+  buyButton.classList.remove("hover:bg-emerald-400");
+  buyButton.classList.add("animate-shake", "duration-100", "transition-all");
+  buyButton.innerText = "Insufficient Funds!";
+
+  setTimeout(() => {
+    buyButton.classList.replace("text-white", "text-slate-900");
+    buyButton.classList.replace("bg-red-500", "bg-emerald-600");
+    buyButton.classList.remove("animate-shake");
+    buyButton.classList.add("hover:bg-emerald-400");
+    buyButton.innerHTML = innerH;
+    buyButton.disabled = false;
+  }, 1000);
+}
+async function button_timedout(uuid: string) {
+  const buyButton = document.getElementById(uuid)!.querySelector("button")!;
+  let innerH = buyButton.innerHTML;
+
+  buyButton.disabled = true;
+  buyButton.classList.replace("text-slate-900", "text-white");
+  buyButton.classList.replace("bg-emerald-600", "bg-blue-500");
+  buyButton.classList.remove("hover:bg-emerald-400");
+  buyButton.classList.add("animate-shake", "duration-100", "transition-all");
+  buyButton.innerText = "Timed Out!";
+
+  setTimeout(() => {
+    buyButton.classList.replace("text-white", "text-slate-900");
+    buyButton.classList.replace("bg-blue-500", "bg-emerald-600");
+    buyButton.classList.remove("animate-shake");
+    buyButton.classList.add("hover:bg-emerald-400");
+    buyButton.innerHTML = innerH;
+    buyButton.disabled = false;
+  }, 1000);
+}
+
+async function delete_voucher(uuid: string, store: boolean): Promise<boolean> {
+  let payload = { userid: get_userid(), uuid: uuid, store };
 
   try {
-    let response = await fetch(`${API_BASE}/delete_storeitem`, {
+    let response = await fetch(`${API_BASE}/delete_item`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
     if (response.ok) {
+      queryUserFunds();
       return true;
     }
   } catch (err) {
@@ -1055,7 +1305,7 @@ async function apiActionPull10(path: string) {
           await sleep(8000);
         } else if (tup_result.result === "S") {
           s += 1;
-          flux += 360;
+          flux += 240;
 
           display.innerHTML = `
           <div class="flex flex-col gap-6 items-center justify-around">
@@ -1067,7 +1317,7 @@ async function apiActionPull10(path: string) {
           await sleep(2000);
         } else if (tup_result.result === "A") {
           a += 1;
-          flux += 120;
+          flux += 70;
 
           document.getElementById("a1")!.innerHTML = `
           <div class="flex flex-col gap-6 items-center justify-around">
@@ -1079,7 +1329,7 @@ async function apiActionPull10(path: string) {
           await sleep(500);
         } else {
           b += 1;
-          flux += 10;
+          flux += 4;
 
           document.getElementById("b1")!.innerHTML = `
           <div class="flex flex-col gap-6 items-center justify-around">
@@ -1250,7 +1500,7 @@ async function apiActionTimer(path: string, payload: TimerRequest) {
           display.innerHTML = `<div class="animate-pulse">${data.status}</div>`;
         }
 
-        queryUserFunds();
+        await queryUserFunds();
       }
       if (path === "/start_timer") {
         button_dp!.outerHTML = `
@@ -1281,35 +1531,127 @@ async function apiActionTimer(path: string, payload: TimerRequest) {
       }
       if (path === "/timer_node") {
         path = "/start_timer";
-        const response = await fetch(`${API_BASE}${path}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await response.json();
+        let resp;
+        try {
+          resp = await fetch(`${API_BASE}${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
 
-        button_dp!.outerHTML = `
+          await queryUserFunds();
+
+          button_dp!.outerHTML = `
         <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
           Timing: ${data.category}
         </button>`;
-        display.innerText = data.status;
+          display.innerText = data.status;
+        } catch (err) {
+          display.innerText = "Error: Node Timed Out";
 
-        document.querySelector("#timer-btn")?.addEventListener("click", () =>
-          apiActionTimer("/start_timer", {
-            userid: get_userid(),
-            category: "SNode",
-          }),
-        );
+          button_dp!.outerHTML = `
+        <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+          Timer
+        </button>`;
+          document.querySelector("#timer-btn")?.addEventListener("click", () =>
+            apiActionTimer("/start_timer", {
+              userid: get_userid(),
+              category: "SNode",
+            }),
+          );
+        }
       }
     }
   } catch (err) {
-    if (display) display.innerText = "Error: Server Offline";
+    if (display) {
+      display.innerText = "Error: Server Offline";
+    }
   }
 }
 
-const modaldivcontent = `
-    <div id="create-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+const usermodal = `
+<div id="user-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+    <div class="relative flex flex-col bg-slate-700/90 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-lg border border-slate-600 overflow-hidden">
+        <div class="p-8 flex flex-col gap-6">
+            <div class="flex justify-between items-center">
+                <h2 class="text-2xl font-black text-slate-100 uppercase tracking-tighter">Sign In</h2>
+            </div>
 
+            <form id="userid-form" class="space-y-4">
+                <div>
+                        <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">UserID</label>
+                        <input type="text" name="userid" placeholder="person"
+                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
+                </div>
+
+                <button id="userid-btn" type="submit" class="text-sm mt-4 w-full bg-emerald-600 text-slate-900 font-black py-4 rounded-xl hover:bg-emerald-400 active:scale-[0.98] transition-all duration-200 flex justify-center items-center shadow-lg shadow-emerald-900/40 uppercase tracking-wider">
+                    <div class="flex justify-center mx-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div class="flex justify-center mr-4 w-28">
+                        <span id="useridForm-btn">Login</span>
+                    </div>
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+`;
+const buymodal = `
+<div id="buy-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+    <div class="relative flex flex-col bg-slate-700/90 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-lg border border-slate-600 overflow-hidden">
+        <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"></div>
+        <div class="p-8 flex flex-col gap-6">
+            <div class="flex justify-between items-center">
+                <h2 class="text-2xl font-black text-slate-100 uppercase tracking-tighter">Buy a Voucher</h2>
+                <button onclick="closeBuyModal()" class="text-slate-400 hover:text-white transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <form id="buy-form" class="space-y-4">
+                <div>
+                    <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Voucher Name</label>
+                    <select id="buymodalselect" name="voucherid"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 transition-colors appearance-none cursor-pointer">
+                    </select>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Total Hours</label>
+                        <input type="number" name="hours" placeholder="24" value=1
+                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Amount</label>
+                        <input type="number" name="amount" placeholder="1" value=1
+                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
+                    </div>
+                </div>
+
+                <button id="buy-modal-btn" type="submit" class="text-sm mt-4 w-full bg-emerald-600 text-slate-900 font-black py-4 rounded-xl hover:bg-emerald-400 active:scale-[0.98] transition-all duration-200 flex justify-center items-center shadow-lg shadow-emerald-900/40 uppercase tracking-wider">
+                    <div class="flex justify-center mx-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div class="flex justify-center mr-4 w-28">
+                        <span id="buyForm-btn">Buy Voucher</span>
+                    </div>
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+`;
+const modaldivcontent = `
+<div id="create-modal" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
     <div class="relative flex flex-col bg-slate-700/90 backdrop-blur-xl rounded-2xl shadow-2xl w-full max-w-lg border border-slate-600 overflow-hidden">
         <div class="h-2.5 w-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"></div>
         <div class="p-8 flex flex-col gap-6">
@@ -1330,15 +1672,21 @@ const modaldivcontent = `
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Coefficient Type</label>
+                    <select name="coeff"
+                        class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 transition-colors appearance-none cursor-pointer">
+                        <option value="base">Base</option>
+                        <option value="exp">EXP</option>
+                        <option value="g">G</option>
+                        <option value="fun_g">Fun G</option>
+                        <option value="pure_c">Pure C</option>
+                    </select>
+                </div>
                     <div>
-                        <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Credit Cost</label>
-                        <input type="number" name="cost" placeholder="1000"
+                        <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Total Hours</label>
+                        <input type="number" name="hours" placeholder="24" value=1
                             class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
-                    </div>
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-1.5">Registry ID</label>
-                        <input type="number" name="id" placeholder="99"
-                            class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-slate-400 font-mono focus:outline-none focus:border-slate-500 transition-colors">
                     </div>
                 </div>
 
@@ -1350,13 +1698,12 @@ const modaldivcontent = `
 
                 <button id="init-btn" type="submit" class="text-3sm mt-4 w-full bg-emerald-600 text-slate-900 font-black py-4 rounded-xl hover:bg-emerald-400 active:scale-[0.98] transition-all duration-200 flex justify-center items-center shadow-lg shadow-emerald-900/40 uppercase tracking-wider">
                     <div class="flex justify-center mx-4">
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
-                      </svg>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+                        </svg>
                     </div>
-
                     <div class="flex justify-center mr-4 w-28">
-                      <span id="createForm-btn">Initialize Voucher</span>
+                        <span id="createForm-btn">Initialize Voucher</span>
                     </div>
                 </button>
             </form>
@@ -1378,11 +1725,8 @@ document.querySelector("#app")!.innerHTML = `
 </div>
 
 <div class="flex flex-row md:flex-col fixed top-4 md:top-8 left-4 md:left-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-left">
-  <button id="do-isrdo-dos" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
-    ISRDO DOS
-  </button>
-  <button id="do-isrdo" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
-    ISRDO
+  <button id="flow" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    FLOW
   </button>
 </div>
 
@@ -1498,6 +1842,12 @@ document.querySelector("#app")!.innerHTML = `
       <button id="create" class="md:mt-4 md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
         CREATE
       </button>
+  <button id="do-isrdo-dos" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    ISRDO DOS
+  </button>
+  <button id="do-isrdo" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    ISRDO
+  </button>
     </div>
 </div>
 <div id="store-boxes" class="w-full h-full content-start grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-6 transition-all duration-300">
@@ -1540,14 +1890,6 @@ document.querySelector("#app")!.innerHTML = `
 
             <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
                 <div class="w-full sm:max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">7AM Init</h3>
-                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Claim Drop Between 7:00 and 7:15am</p>
-                </div>
-                <button disabled id="dailyE" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
-            </div>
-
-            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
-                <div class="w-full sm:max-w-[70%]">
                     <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Complete Preflight</h3>
                     <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Shower, dishes, maintenance, teeth. Clear mind and let go.</p>
                 </div>
@@ -1556,8 +1898,8 @@ document.querySelector("#app")!.innerHTML = `
 
             <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
                 <div class="w-full sm:max-w-[70%]">
-                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Blood & Hormones</h3>
-                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">20 burpees of 7 sets or until failure. Pump the system.</p>
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Ignition</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">15 pushups of 7 sets or until failure. Pump the system.</p>
                 </div>
                 <button disabled id="dailyC" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
@@ -1565,9 +1907,17 @@ document.querySelector("#app")!.innerHTML = `
             <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
                 <div class="w-full sm:max-w-[70%]">
                     <h3 class="font-bold text-slate-100 italic text-sm md:text-base">Flux Expenditure</h3>
-                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Channel 500 Flux through the extraction conduits.</p>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Channel 324 Flux through the extraction conduits.</p>
                 </div>
                 <button disabled id="dailyD" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
+            </div>
+
+            <div class="daily-row flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 md:p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 gap-3 sm:gap-0">
+                <div class="w-full sm:max-w-[70%]">
+                    <h3 class="font-bold text-slate-100 italic text-sm md:text-base">7AM Init</h3>
+                    <p class="text-[10px] md:text-xs text-slate-400 leading-relaxed">Claim Drop Between 7:00 and 7:15am</p>
+                </div>
+                <button disabled id="dailyE" class="w-full sm:w-auto claim-btn px-6 py-2 rounded-lg font-black uppercase tracking-widest text-xs md:text-sm transition-all bg-slate-700 text-slate-500 cursor-not-allowed">Claim</button>
             </div>
         </div>
 
@@ -1758,6 +2108,21 @@ document.querySelector("#home")?.addEventListener("click", () => {
 document.querySelector("#home-from-store")?.addEventListener("click", () => {
   goHome(true);
 });
+document.querySelector("#flow")?.addEventListener("click", () => {
+  toggleFlow();
+});
+
+async function toggleFlow() {
+  let resp = await fetch(`${API_BASE}/pause_dripper?userid=${get_userid()}`);
+  const button = document.querySelector("#flow") as HTMLButtonElement;
+
+  if (button && resp.status === 200) {
+    button.innerText = "FLOW";
+  } else if (button && resp.status === 202) {
+    button.innerText = "NOFLO";
+  }
+  await queryUserFunds();
+}
 
 document
   .querySelector("#isrdo-window-closebtn")
@@ -1973,9 +2338,29 @@ async function prepareDailies() {
   });
 }
 
+async function updateTimerBtn() {
+  let payload = { userid: get_userid(), category: "SNode", info: true };
+  let path = "/start_timer";
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+
+  await queryUserFunds();
+  if (data.status === "Timer Already Active") {
+    const button_dp = document.querySelector("#timer-btn") as HTMLButtonElement;
+    button_dp!.outerHTML = `
+        <button id="timer-btn" class="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-lg shadow-lg shadow-emerald-500/20">
+          Timing: ${data.category}
+        </button>`;
+  }
+}
 async function runTask() {
   while (true) {
     queryUserFunds();
+    updateTimerBtn();
 
     setTimeout(() => {
       while (true) {
@@ -1993,7 +2378,11 @@ async function runTask() {
     await sleep(45000);
   }
 }
-runTask();
+async function init() {
+  runTask();
+}
+
+det_id();
 
 // REFRESH LOGIC for DAILIES
 const refreshBtn = document.getElementById("refresh-dailies")!;

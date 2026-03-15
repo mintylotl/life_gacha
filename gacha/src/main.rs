@@ -10,6 +10,7 @@ use serde_json::Error as serdeError;
 use serde_json::{self};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use tokio::task::JoinHandle;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -40,7 +41,6 @@ struct Voucher {
     uuid: Uuid,
     name: String,
     cost: u64,
-    #[serde(default)]
     hours: u32,
     new: bool,
     description: String,
@@ -107,13 +107,152 @@ impl From<&str> for Coeff {
     }
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+struct Bar {
+    id: u8,
+    locked: bool,
+    is_timing: bool,
+    overdrive: bool,
+    c: f64,
+    s: f64,
+    smax: f64,
+    tmax: f64,
+    tbase: f64,
+    s_reduction: f64,
+}
+
+impl Bar {
+    fn new(id: u8) -> Self {
+        let mut bar = Self {
+            id: id,
+            c: 0.0,
+            is_timing: false,
+            overdrive: false,
+            s: 0.0,
+            smax: 0.0,
+            locked: false,
+            tbase: 0.0,
+            tmax: 0.0,
+            s_reduction: 0.0,
+        };
+        match id {
+            0 => {
+                bar.c = 1.5;
+                bar.smax = 240.0;
+                bar.tmax = 360.0;
+                bar
+            }
+            1 => {
+                bar.c = 1.2;
+                bar.smax = 210.0;
+                bar.tmax = 360.0;
+                bar
+            }
+            2 => {
+                bar.c = 1.0;
+                bar.smax = 90.0;
+                bar.tmax = 480.0;
+                bar
+            }
+            3 => {
+                bar.c = 0.7;
+                bar.smax = 150.0;
+                bar.tmax = 600.0;
+                bar
+            }
+            4 => {
+                bar.c = 1.1;
+                bar.smax = 90.0;
+                bar.tmax = 480.0;
+                bar
+            }
+            _ => bar,
+        }
+    }
+
+    fn start_timer(&self, state: AppState) -> JoinHandle<u8> {
+        let state_i = state.clone();
+        let id = self.id;
+        tokio::spawn(async move {
+            let time = 5.0;
+            let state = state_i;
+            let id = id;
+            let mut interval = tokio::time::interval(Duration::minutes(5).to_std().unwrap());
+            interval.tick().await;
+
+            {
+                let mut bars = state.bars.lock().unwrap();
+                let bar = bars.get_mut(id as usize).unwrap();
+
+                if bar.tbase > bar.tmax - 15.0 && !bar.overdrive || bar.locked {
+                    return 1;
+                }
+
+                bar.is_timing = true;
+                let temp = bar.tbase;
+                if bar.s >= bar.smax {
+                    bar.tbase = bar.tmax;
+                }
+                if bar.tbase >= bar.tmax && !bar.overdrive {
+                    bar.tbase = temp;
+                    let val = bar.tmax - bar.tbase;
+
+                    bar.overdrive = true;
+                    bar.s = bar.smax - val.min((0.24 * bar.smax) + 15.0);
+                }
+            }
+
+            loop {
+                interval.tick().await;
+                let mut bars = state.bars.lock().unwrap();
+
+                let bar = bars.get_mut(id as usize).unwrap();
+                let c = bar.c;
+
+                if c >= 1.0 {
+                    bar.tbase += time * bar.c;
+                } else {
+                    bar.tbase += time;
+                }
+                bar.s += time;
+
+                if bar.s >= bar.smax {
+                    if bar.overdrive || bar.s_reduction >= (0.24 * bar.smax) + 15.0 {
+                        bar.locked = true;
+                    }
+                    bar.tbase = bar.tmax;
+                    bar.s = bar.smax;
+                    bar.is_timing = false;
+                    break 0;
+                }
+
+                bars.iter_mut().for_each(|bar_f| {
+                    if bar_f.id != id {
+                        bar_f.tbase -= time * c;
+                        if bar_f.tbase < 0.0 {
+                            bar_f.tbase = 0.0
+                        }
+                        if bar_f.s_reduction < (bar_f.smax * 0.24) + 15.0 && !bar_f.overdrive {
+                            if !((bar_f.s - time * c) < 0.0) {
+                                bar_f.s -= time * c;
+                                bar_f.s_reduction += c * time;
+                            }
+                        } else {
+                            bar_f.overdrive = true;
+                        }
+                    }
+                });
+            }
+        })
+    }
+}
+
 impl Voucher {
     fn by_id(id: u64, user: &User, state: Option<&AppState>) -> Result<Self, PersistenceError> {
         match id {
             999 => Ok(Self::mythic_week()),
             1 => Ok(Self::off_day()),
             2 => Ok(Self::gaming(2)),
-            3 => Ok(Self::slip_gacha(1)),
             4 => Ok(Self::coffee()),
             5 => Ok(Self::coffee_standard()),
             24 => Ok(Self::japanese(2)),
@@ -228,23 +367,6 @@ impl Voucher {
             description: format!("{} Hour Gaming Session", hours),
         }
     }
-    fn slip_gacha(hours: u32) -> Self {
-        let coeff = Coeff::fun_g().get_val();
-        let cost = coeff * hours as u64;
-
-        Self {
-            id: 3,
-            uuid: uuid::Uuid::now_v7(),
-            name: format!("Gacha Slip ({}H)", hours),
-            cost,
-            hours,
-            new: true,
-            description: format!(
-                "Permission Slip for Working on the Gacha Machine for {} Hours",
-                hours
-            ),
-        }
-    }
     fn coffee() -> Self {
         Self {
             id: 4,
@@ -314,9 +436,9 @@ struct User {
     dailies: Vec<Daily>,
     vouchers: Vec<Voucher>,
     templates: Vec<Voucher>,
+    bars: Vec<Bar>,
     active_timer: bool,
-    #[serde(default)]
-    active_timeout: bool,
+    active_bar: u8,
     pause_drip: bool,
     timer: Option<Timer>,
     timeout_map: HashMap<u64, i64>,
@@ -378,8 +500,8 @@ impl SqliteRepo {
     }*/
     fn new(path: &str) -> Self {
         let conn = Connection::open(path).expect("Error opening DB!");
-        let init = false;
-        let mut user = User {
+        //let init = false;
+        /*let mut user = User {
             id: UserId("testing".to_string()),
             astrum: 1600,
             astrai: 30,
@@ -387,7 +509,6 @@ impl SqliteRepo {
             has_slip: false,
             email: None,
             active_timer: false,
-            active_timeout: false,
             timer: None,
             timeout_map: HashMap::new(),
             a_pity: 0,
@@ -403,8 +524,8 @@ impl SqliteRepo {
             templates: Vec::<Voucher>::new(),
             isrdos: Vec::<ISRDO>::new(),
             pause_drip: false,
-        };
-        user.templates = Voucher::get_templates(&user);
+        };*/
+        //user.templates = Voucher::get_templates(&user);
 
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS users (
@@ -414,12 +535,12 @@ impl SqliteRepo {
             [],
         );
 
-        if init {
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
-                params![user.id.0, serde_json::to_string(&user).unwrap()],
-            );
-        }
+        //if init {
+        //    let _ = conn.execute(
+        //       "INSERT OR REPLACE INTO users (id, data) Values(?1, ?2)",
+        //        params![user.id.0, serde_json::to_string(&user).unwrap()],
+        //    );
+        //}
 
         Self {
             db: Mutex::new(conn),
@@ -506,6 +627,8 @@ impl TryFrom<&User> for PityCtx {
 #[derive(Clone)]
 struct AppState {
     repo: Arc<SqliteRepo>,
+    timer: Arc<Mutex<Option<JoinHandle<u8>>>>,
+    bars: Arc<Mutex<Vec<Bar>>>,
 }
 
 fn load_user(
@@ -599,7 +722,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                     uuid::Uuid::now_v7(),
                     "15 Minute Break".into(),
                     (Coeff::pure_c().get_val() as f64 * 0.25) as u64,
-                    0_32,
+                    0_u32,
                     true,
                     "Take a 15 minute breather break".into(),
                 ));
@@ -1023,25 +1146,19 @@ async fn consume(
                 let timeout_dur = Duration::minutes((timeout_base * 60.0) as i64);
                 let timeout = timeout_dur.num_minutes();
 
-                let state_clone = state.clone();
-                let userid = req.userid.clone();
-                if !user.active_timeout {
-                    tokio::spawn(async move {
-                        let state = state_clone;
-                        if let Ok(dur) = timeout_dur.to_std() {
-                            let _ = tokio::time::sleep(dur);
-                            let (mut user, conn) = load_user(userid, &state).unwrap();
-
-                            user.active_timeout = false;
-                            let _ = save_user(&user, &conn, &state);
-                        } else {
-                            return;
-                        }
-                    });
-                    user.active_timeout = true;
-                }
+                println!(
+                    "{}\n {}\n {}\n {}\n {}\n {}\n {}",
+                    timeout_dur.num_minutes(),
+                    timeout,
+                    duration.num_minutes(),
+                    coeff,
+                    hours,
+                    timeout_base,
+                    voucher.hours
+                );
 
                 if duration.num_minutes() < timeout {
+                    println!("Timed out!");
                     return Err(StatusCode::FORBIDDEN);
                 }
 
@@ -1121,7 +1238,7 @@ struct Daily {
     last_claimed: i64,
 }
 impl Daily {
-    fn init() -> Vec<Self> {
+    /*fn init() -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
         for i in 0..5 {
             vec.push(Daily {
@@ -1135,7 +1252,7 @@ impl Daily {
         vec[4].claimable = false;
 
         vec
-    }
+    }*/
     fn cycle(offset: u8) -> i64 {
         let now = Utc::now();
         let mut cycle_start = Utc
@@ -1174,6 +1291,12 @@ async fn dailies(
     if req.info {
         for daily in user.dailies.iter_mut() {
             if daily.id == 4 {
+                if daily.last_claimed >= Daily::cycle(3) {
+                    daily.claimable = false;
+                    daily.claimed = true;
+                } else {
+                    daily.claimed = false;
+                }
                 break;
             }
 
@@ -1209,8 +1332,17 @@ async fn dailies(
 
         match req.id {
             0 => {
-                user.astrum += 240;
+                let mut bars = state.bars.lock().unwrap();
+                bars.iter_mut().filter(|f| f.locked).for_each(|bar| {
+                    bar.locked = false;
+                    bar.s_reduction = 0.0;
+                    bar.s = 0.0;
+                    bar.tbase = 0.0;
+                    bar.is_timing = false;
+                    bar.overdrive = false;
+                });
 
+                user.astrum += 240;
                 rw_astrum += 240;
             }
             1 => {
@@ -1529,6 +1661,70 @@ async fn pause_dripper(
     }
 }
 
+#[derive(Deserialize, Clone)]
+struct BarReq {
+    id: u8,
+    info: bool,
+    userid: String,
+}
+async fn bars(
+    State(state): State<AppState>,
+    Json(req): Json<BarReq>,
+) -> Result<Json<Vec<Bar>>, StatusCode> {
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+    if req.info {
+        Ok(Json(state.bars.lock().unwrap().clone()))
+    } else {
+        match req.id {
+            255 => Err(StatusCode::FORBIDDEN),
+            _ => match state.timer.lock() {
+                Ok(mut timer_guard) => {
+                    if let Some(timer) = timer_guard.take() {
+                        timer.abort();
+                        let mut result = state.bars.lock().unwrap();
+
+                        result.iter_mut().filter(|f| f.is_timing).for_each(|bar| {
+                            bar.is_timing = false;
+                        });
+
+                        let bars = result.clone();
+                        user.bars = bars;
+
+                        let _ = save_user(&user, &conn, &state);
+                        if !(user.active_bar == req.id) {
+                            let status = Bar::new(req.id).start_timer(state.clone());
+
+                            if status.is_finished() {
+                                return Err(StatusCode::FORBIDDEN);
+                            } else {
+                                *timer_guard = Some(status);
+                                user.active_bar = req.id;
+                                let _ = save_user(&user, &conn, &state);
+                            }
+                            return Err(StatusCode::OK);
+                        }
+
+                        Err(StatusCode::ACCEPTED)
+                    } else {
+                        let status = Bar::new(req.id).start_timer(state.clone());
+
+                        if status.is_finished() {
+                            return Err(StatusCode::FORBIDDEN);
+                        } else {
+                            *timer_guard = Some(status);
+                            user.active_bar = req.id;
+
+                            let _ = save_user(&user, &conn, &state);
+                        }
+                        Err(StatusCode::OK)
+                    }
+                }
+                Err(_) => Err(StatusCode::FORBIDDEN),
+            },
+        }
+    }
+}
+
 fn get_username() -> String {
     "axol999".to_string()
 }
@@ -1536,7 +1732,11 @@ fn get_username() -> String {
 #[tokio::main]
 async fn main() {
     let repo = SqliteRepo::new("userdata.sql");
-    let state = AppState { repo: repo.into() };
+    let state = AppState {
+        repo: repo.into(),
+        timer: Arc::new(Mutex::new(None)),
+        bars: Arc::new(Mutex::new(Vec::<Bar>::new())),
+    };
 
     {
         let state_tmp = state.clone();
@@ -1550,7 +1750,11 @@ async fn main() {
         //user.todays_flux.1 = 0;
         //user.templates = Voucher::get_templates();
         user.pause_drip = true;
-        user.active_timeout = false;
+
+        let mut bars = state.bars.lock().unwrap();
+        //*bars = user.bars.clone();
+        *bars = user.bars.clone();
+
         let _ = state_tmp.repo.save(&user, &conn);
     }
 
@@ -1574,6 +1778,7 @@ async fn main() {
         .route("/isrdo_complete", post(isrdo_complete))
         .route("/7am_unlock", get(seven_am_unlock))
         .route("/pause_dripper", get(pause_dripper))
+        .route("/bars", post(bars))
         .layer(CorsLayer::permissive())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("11.0.0.2:3000")

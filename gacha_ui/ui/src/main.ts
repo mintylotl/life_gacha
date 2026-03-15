@@ -4,10 +4,44 @@ const API_BASE = "https://11.0.0.2:37399";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Simple helper to talk to your Rust server
 
-function det_id() {
+async function det_id() {
   let device_id = localStorage.getItem("device_id");
 
   if (device_id) {
+    const barpage = new BarPage();
+
+    const update_func = async (barPage: BarPage, cat: any) => {
+      let catg = cat as keyof typeof barPage;
+      while (barPage[catg].isTiming) {
+        updateBars(barpage, 255);
+
+        await sleep(1000);
+      }
+    };
+    const init_func = async function (
+      barpage: BarPage,
+      id: number,
+      cat: string,
+    ) {
+      let catg = cat as keyof typeof barpage;
+      if (barpage[catg].isLocked) {
+        return;
+      }
+
+      await updateBars(barpage, id);
+      await updateBars(barpage, 255);
+
+      update_func(barpage, catg);
+    };
+
+    await updateBars(barpage, 255);
+
+    (Object.keys(barpage) as Array<keyof BarPage>).forEach((key, idx) => {
+      barpage[key].onClick = async () => {
+        init_func(barpage, idx, key);
+      };
+    });
+
     init();
     return;
   }
@@ -26,7 +60,6 @@ function det_id() {
       );
 
       localStorage.setItem("device_id", form.get("userid") as string);
-
       document.querySelector("#user-modal")?.remove();
     });
 
@@ -39,11 +72,285 @@ function get_userid() {
 
   if (deviceId) {
     userid = deviceId;
-    console.log("Inside");
   }
 
-  console.log("Device Identity:", deviceId);
   return userid;
+}
+
+interface BarpageResp {
+  id: number;
+  c: number;
+  s: number;
+  smax: number;
+  tmax: number;
+  tbase: number;
+  locked: boolean;
+  is_timing: boolean;
+  overdrive: boolean;
+}
+async function updateBars(barpage: BarPage, id: number) {
+  let payload;
+  if (id < 5) {
+    payload = { userid: get_userid(), info: false, id: id };
+  } else {
+    payload = { userid: get_userid(), info: true, id: 255 };
+  }
+  try {
+    let resp = await fetch(`${API_BASE}/bars`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    let data: BarpageResp[] = await resp.json();
+
+    if (resp.ok) {
+      data.forEach((bar) => {
+        console.log(`Bar ${bar.id}: Overdrive: ${bar.overdrive}`);
+        console.log(`Bar ${bar.id}: tBase: ${bar.tbase}`);
+        if (bar.id === 0) {
+          barpage.stability.c = bar.c;
+          barpage.stability.currentS = bar.s;
+          barpage.stability.sMax = bar.smax;
+          barpage.stability.isLocked = bar.locked;
+          barpage.stability.isTiming = bar.is_timing;
+          barpage.stability.isOverdrive = bar.overdrive;
+        }
+        if (bar.id === 1) {
+          barpage.expansion.c = bar.c;
+          barpage.expansion.currentS = bar.s;
+          barpage.expansion.sMax = bar.smax;
+          barpage.expansion.isLocked = bar.locked;
+          barpage.expansion.isTiming = bar.is_timing;
+          barpage.expansion.isOverdrive = bar.overdrive;
+        }
+        if (bar.id === 2) {
+          barpage.maintenance.c = bar.c;
+          barpage.maintenance.currentS = bar.s;
+          barpage.maintenance.sMax = bar.smax;
+          barpage.maintenance.isLocked = bar.locked;
+          barpage.maintenance.isTiming = bar.is_timing;
+          barpage.maintenance.isOverdrive = bar.overdrive;
+        }
+
+        if (bar.id === 3) {
+          barpage.leisure.c = bar.c;
+          barpage.leisure.currentS = bar.s;
+          barpage.leisure.sMax = bar.smax;
+          barpage.leisure.isLocked = bar.locked;
+          barpage.leisure.isTiming = bar.is_timing;
+          barpage.leisure.isOverdrive = bar.overdrive;
+        }
+        if (bar.id === 4) {
+          barpage.meta.c = bar.c;
+          barpage.meta.currentS = bar.s;
+          barpage.meta.sMax = bar.smax;
+          barpage.meta.isLocked = bar.locked;
+          barpage.meta.isTiming = bar.is_timing;
+          barpage.meta.isOverdrive = bar.overdrive;
+        }
+      });
+    }
+  } catch {
+    console.error("err");
+  }
+}
+
+class VectorBar {
+  private element: HTMLElement;
+  private _c: number = 1;
+  private _sMax: number = 1;
+  private _currentS: number = 0;
+  private _isLocked: boolean = false;
+  private _isTiming: boolean = false;
+  private _isOverdrive: boolean = false;
+  private _tBase: number = 0;
+  private _tMax: number = 0;
+
+  public onClick: (() => Promise<void>) | null = null;
+
+  constructor(public label: string) {
+    this.element = document.createElement("section");
+    this.element.className =
+      "space-y-3 p-4 bg-slate-900/50 rounded-xl border border-slate-800 transition-all";
+
+    this.element.addEventListener("click", () => {
+      if (this.onClick) this.onClick();
+    });
+    this.render();
+  }
+
+  // Reactive setters
+  set c(val: number) {
+    this._c = val;
+    this.update();
+  }
+  set sMax(val: number) {
+    this._sMax = val;
+    this.update();
+  }
+  set currentS(val: number) {
+    this._currentS = val;
+    this.update();
+  }
+  set isLocked(val: boolean) {
+    this._isLocked = val;
+    this.update();
+  }
+  set isTiming(val: boolean) {
+    this._isTiming = val;
+    this.update();
+  }
+  set isOverdrive(val: boolean) {
+    this._isOverdrive = val;
+    this.update();
+  }
+  set tBase(val: number) {
+    this._tBase = val;
+    this.update();
+  }
+  set tMax(val: number) {
+    this._tMax = val;
+    this.update();
+  }
+
+  get isOverdrive(): boolean {
+    return this._isOverdrive;
+  }
+  get isTiming(): boolean {
+    return this._isTiming;
+  }
+  get isLocked(): boolean {
+    return this._isLocked;
+  }
+  get currentS(): number {
+    return this.currentS;
+  }
+  get sMax(): number {
+    return this.sMax;
+  }
+  get c(): number {
+    return this.c;
+  }
+  get tBase(): number {
+    return this._tBase;
+  }
+  get tMax(): number {
+    return this._tMax;
+  }
+
+  private update() {
+    const bar = this.element.querySelector(".fill-bar") as HTMLElement;
+    const stats = this.element.querySelector(".stats") as HTMLElement;
+    const labelEl = this.element.querySelector(".label") as HTMLElement;
+
+    // Logic for color and width
+    const percentage = Math.min((this._currentS / this._sMax) * 100, 100);
+
+    // UI State Logic
+    if (this._isLocked) {
+      bar.className =
+        "fill-bar h-full bg-slate-700 transition-all duration-500";
+      labelEl.className = "label text-lg font-medium text-slate-500";
+    } else if (this._isTiming) {
+      labelEl.className =
+        "label text-lg font-medium text-blue-400 transition-all duration-300";
+      bar.className = this._isOverdrive
+        ? "fill-bar h-full bg-red-500/80 shadow-[0_0_15px_rgba(251,191,36,0.4)] transition-all duration-500"
+        : "fill-bar h-full bg-blue-500/80 shadow-[0_0_15px_rgba(251,191,36,0.4)] transition-all duration-500";
+    } else {
+      labelEl.className = "label text-lg font-medium text-slate-100";
+      bar.className =
+        this._currentS > 0 && this._currentS < this._sMax
+          ? "fill-bar h-full bg-emerald-400 shadow-[0_0_15px_rgba(251,191,36,0.4)] transition-all duration-500"
+          : "fill-bar h-full bg-amber-500 transition-all duration-500";
+
+      bar.className =
+        this._isOverdrive && !this._isTiming
+          ? "fill-bar h-full bg-red-300/80 shadow-[0_0_15px_rgba(251,191,36,0.4)] transition-all duration-500"
+          : bar.className;
+    }
+
+    bar.style.width = `${percentage}%`;
+    stats.innerHTML = `C: ${this._c.toFixed(1)} | Smax: ${this._sMax.toFixed(1)} | Cur: ${this._currentS.toFixed(1)}`;
+  }
+
+  private render() {
+    this.element.innerHTML = `
+      <div class="flex justify-between items-center">
+        <span class="label text-lg font-medium text-slate-100">${this.label}</span>
+        <span class="stats text-xs font-mono text-slate-500 uppercase tracking-wider"></span>
+      </div>
+      <div class="h-4 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+        <div class="fill-bar h-full w-0 transition-all duration-500"></div>
+      </div>
+    `;
+    this.update();
+  }
+
+  get node() {
+    return this.element;
+  }
+}
+export class BarPage {
+  public stability = new VectorBar("Stability");
+  public expansion = new VectorBar("Expansion");
+  public maintenance = new VectorBar("Maintenance");
+  public leisure = new VectorBar("Leisure");
+  public meta = new VectorBar("Meta");
+
+  constructor(containerId: string = "barpage") {
+    const container = document.getElementById(containerId);
+    if (!container) {
+      return;
+    }
+
+    const home = document.getElementById("app-main");
+    if (!home) {
+      return;
+    }
+
+    // Build the page structure
+    container.className = "min-h-screen bg-slate-900/50 p-8 text-slate-200";
+    container.innerHTML = `
+      <button id="barpage-homebtn" class="mb-12 px-4 py-2 bg-slate-800 border border-slate-800 rounded hover:bg-slate-700 transition-colors">Home</button>
+      <div class="max-w-3xl mx-auto space-y-6 w-[70vw]" id="bars-list"></div>
+    `;
+
+    container.classList.add("hidden");
+
+    let btn = document.querySelector("#barpage-homebtn") as HTMLButtonElement;
+    btn?.addEventListener("click", () => {
+      // 1. Start fading out the container
+      container.classList.add(
+        "transition-opacity",
+        "duration-500",
+        "opacity-0",
+      );
+
+      setTimeout(() => {
+        // 2. Hide the container and prepare home (keep it invisible for now)
+        container.classList.add("hidden");
+
+        home.classList.add("opacity-0", "transition-opacity", "duration-500");
+        home.classList.remove("hidden");
+
+        // 3. Use a tiny delay (or requestAnimationFrame) to trigger the fade in
+        setTimeout(() => {
+          home.classList.remove("opacity-0");
+          home.classList.add("opacity-100");
+        }, 20);
+      }, 500); // Match this to your duration (500ms)
+    });
+    const list = container.querySelector("#bars-list")!;
+    [
+      this.stability,
+      this.expansion,
+      this.maintenance,
+      this.leisure,
+      this.meta,
+    ].forEach((bar) => list.appendChild(bar.node));
+  }
 }
 
 interface Reward {
@@ -1714,6 +2021,7 @@ const modaldivcontent = `
 
 // MAIN CONTENT
 document.querySelector("#app")!.innerHTML = `
+<div id="app-main">
 <section id="home-page" class="transition-opacity duration-500 flex justify-center w-full px-4 md:px-0 min-w-[400px] ">
 <div class="flex flex-row md:flex-col fixed top-4 md:top-8 right-4 md:right-4 gap-2 md:gap-5 z-50 scale-75 md:scale-100 origin-top-right">
   <button id="store" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-3sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
@@ -1721,6 +2029,9 @@ document.querySelector("#app")!.innerHTML = `
   </button>
   <button id="stock" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
     INVENTORY
+  </button>
+  <button id="bars" class="md:h-24 h-18 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-2sm shadow-lg shadow-emerald-500/20 p-4 md:p-8 bg-slate-800 md:rounded-2xl shadow-2xl border border-slate-700 w-24 md:w-25 h-10 font-mono font-sm3 flex justify-center items-center">
+    BARS
   </button>
 </div>
 
@@ -2058,9 +2369,16 @@ document.querySelector("#app")!.innerHTML = `
     </div>
   </div>
 </div>
+</div>
+<div id="barpage" class="bg-slate-800 hidden">
+</div>
 `;
 
 // Event Listeners
+document.querySelector("#bars")?.addEventListener("click", () => {
+  document.querySelector("#app-main")?.classList.add("hidden");
+  document.querySelector("#barpage")?.classList.remove("hidden");
+});
 document
   .querySelector("#pull-btn")
   ?.addEventListener("click", () => apiActionPull("/pull", [30, 750], true));

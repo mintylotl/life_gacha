@@ -403,7 +403,7 @@ impl Voucher {
         }
     }
 }
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Copy)]
 enum Category {
     SNode,
     ANode,
@@ -783,7 +783,12 @@ fn gen_timer_id() -> String {
     "1111".to_string()
 }
 
-fn is_timedout(user: &mut User, conn: &MutexGuard<'_, Connection>, state: &AppState) -> bool {
+fn is_timedout(
+    user: &mut User,
+    catg: Category,
+    conn: &MutexGuard<'_, Connection>,
+    state: &AppState,
+) -> bool {
     if let Some(ref timer) = user.timer {
         let dur = match timer.category {
             Category::SNode => 45,
@@ -794,7 +799,7 @@ fn is_timedout(user: &mut User, conn: &MutexGuard<'_, Connection>, state: &AppSt
             let timeout = Duration::minutes(dur as i64).num_minutes();
             let duration = Utc::now() - timer.ended.unwrap();
 
-            if duration.num_minutes() < timeout {
+            if duration.num_minutes() < timeout || timer.category != catg {
                 user.pause_drip = true;
                 let _ = save_user(user, conn, state);
                 return true;
@@ -818,7 +823,7 @@ async fn start_timer(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    if is_timedout(&mut user, &conn, &state) {
+    if is_timedout(&mut user, req.category, &conn, &state) {
         return Err(StatusCode::REQUEST_TIMEOUT);
     }
 
@@ -917,7 +922,7 @@ async fn stop_timer(
     let timer: Timer = user.timer.clone().unwrap();
     let reward = Some(resolve_timer(timer.clone()));
 
-    if !is_timedout(&mut user, &conn, &state) {
+    if !is_timedout(&mut user, timer.category, &conn, &state) {
         user.pause_drip = false;
     }
 
@@ -1333,11 +1338,11 @@ async fn dailies(
         match req.id {
             0 => {
                 let mut bars = state.bars.lock().unwrap();
-                bars.iter_mut().filter(|f| f.locked).for_each(|bar| {
+                bars.iter_mut().for_each(|bar| {
                     bar.locked = false;
                     bar.s_reduction = 0.0;
-                    bar.s = 0.0;
-                    bar.tbase = 0.0;
+                    bar.s -= ((8.0 * 60.0) as f64).max(0.0);
+                    bar.tbase -= ((8.0 * 60.0) as f64).max(0.0);
                     bar.is_timing = false;
                     bar.overdrive = false;
                 });
@@ -1706,7 +1711,12 @@ async fn bars(
 
                         Err(StatusCode::ACCEPTED)
                     } else {
+                        let result = state.bars.lock().unwrap();
                         let status = Bar::new(req.id).start_timer(state.clone());
+                        let bars = result.clone();
+                        user.bars = bars;
+
+                        let _ = save_user(&user, &conn, &state);
 
                         if status.is_finished() {
                             return Err(StatusCode::FORBIDDEN);

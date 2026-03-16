@@ -15,7 +15,7 @@ async function det_id() {
       while (barPage[catg].isTiming) {
         updateBars(barpage, 255);
 
-        await sleep(1000);
+        await sleep(30000);
       }
     };
     const init_func = async function (
@@ -277,9 +277,9 @@ class VectorBar {
 
   private render() {
     this.element.innerHTML = `
-      <div class="flex justify-between items-center">
-        <span class="label text-lg font-medium text-slate-100">${this.label}</span>
-        <span class="stats text-xs font-mono text-slate-500 uppercase tracking-wider"></span>
+      <div class="flex justify-around w-[40vw]">
+        <span class="label w-[200px] text-sm font-medium text-slate-100">${this.label}</span>
+        <span class="stats text-xs font-mono text-slate-500"></span>
       </div>
       <div class="h-4 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700">
         <div class="fill-bar h-full w-0 transition-all duration-500"></div>
@@ -314,7 +314,7 @@ export class BarPage {
     container.className = "min-h-screen bg-slate-900/50 p-8 text-slate-200";
     container.innerHTML = `
       <button id="barpage-homebtn" class="mb-12 px-4 py-2 bg-slate-800 border border-slate-800 rounded hover:bg-slate-700 transition-colors">Home</button>
-      <div class="max-w-3xl mx-auto space-y-6 w-[70vw]" id="bars-list"></div>
+      <div class="mx-auto space-y-6 w-[100vw] max-w-[70vw] w" id="bars-list"></div>
     `;
 
     container.classList.add("hidden");
@@ -2377,7 +2377,7 @@ document.querySelector("#app")!.innerHTML = `
 // Event Listeners
 document.querySelector("#bars")?.addEventListener("click", () => {
   document.querySelector("#app-main")?.classList.add("hidden");
-  document.querySelector("#barpage")?.classList.remove("hidden");
+  document.querySelector("#barpage")?.classList.remove("hidden", "opacity-0");
 });
 document
   .querySelector("#pull-btn")

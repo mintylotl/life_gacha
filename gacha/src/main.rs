@@ -119,10 +119,20 @@ struct Bar {
     tmax: f64,
     tbase: f64,
     s_reduction: f64,
+    #[serde(default)]
+    overdrive_val: f64,
 }
 
 impl Bar {
-    fn new(id: u8) -> Self {
+    fn _vec() -> Vec<Bar> {
+        let mut vec = Vec::<Bar>::new();
+        for x in 0..6 {
+            vec.push(Bar::by_id(x));
+        }
+
+        vec
+    }
+    fn by_id(id: u8) -> Self {
         let mut bar = Self {
             id: id,
             c: 0.0,
@@ -134,45 +144,99 @@ impl Bar {
             tbase: 0.0,
             tmax: 0.0,
             s_reduction: 0.0,
+            overdrive_val: 0.0,
         };
         match id {
             0 => {
                 bar.c = 1.5;
                 bar.smax = 240.0;
                 bar.tmax = 360.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
                 bar
             }
             1 => {
                 bar.c = 1.2;
                 bar.smax = 210.0;
                 bar.tmax = 360.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
                 bar
             }
             2 => {
                 bar.c = 1.0;
                 bar.smax = 90.0;
                 bar.tmax = 480.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
                 bar
             }
             3 => {
                 bar.c = 0.7;
                 bar.smax = 150.0;
                 bar.tmax = 600.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
                 bar
             }
             4 => {
                 bar.c = 1.1;
                 bar.smax = 90.0;
                 bar.tmax = 480.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
+                bar
+            }
+            5 => {
+                bar.c = 0.0;
+                bar.smax = 180.0;
+                bar.tmax = 10000.0;
+                bar.overdrive_val = (0.24 * bar.smax) + 15.0;
                 bar
             }
             _ => bar,
         }
     }
 
+    fn start_idle(&self, state: AppState) -> JoinHandle<u8> {
+        let id = self.id;
+        tokio::spawn(async move {
+            let state = state;
+            let mut interval = tokio::time::interval(Duration::minutes(5).to_std().unwrap());
+            let mut eat = false;
+            interval.tick().await;
+
+            {
+                let mut bars = state.bars.lock().unwrap();
+                let bar = bars.get_mut(id as usize).unwrap();
+                bar.is_timing = true;
+            }
+            loop {
+                interval.tick().await;
+                let mut bars = state.bars.lock().unwrap();
+                let bar = bars.get_mut(id as usize).unwrap();
+                bar.s += 5.0;
+
+                if bar.s >= bar.smax {
+                    if !bar.overdrive {
+                        bar.overdrive = true;
+                        bar.s -= bar.overdrive_val
+                    } else {
+                        bar.locked = true;
+                        bar.is_timing = false;
+                        eat = true;
+                    }
+                }
+
+                if eat {
+                    let handle = bars.get_mut(3).unwrap().start_timer(state.clone());
+                    let mut timer = state.timer.lock().unwrap();
+                    *timer = Some(handle);
+                    break 0;
+                }
+            }
+        })
+    }
+
     fn start_timer(&self, state: AppState) -> JoinHandle<u8> {
         let state_i = state.clone();
         let id = self.id;
+
         tokio::spawn(async move {
             let time = 5.0;
             let state = state_i;
@@ -182,68 +246,103 @@ impl Bar {
 
             {
                 let mut bars = state.bars.lock().unwrap();
+
+                if bars.iter().filter(|f| !f.locked).count() == 1 {
+                    bars.iter_mut().filter(|f| !f.locked).for_each(|bar| {
+                        bar.s -= bar.overdrive_val;
+                        bar.s_reduction = bar.overdrive_val;
+                    });
+                }
+
                 let bar = bars.get_mut(id as usize).unwrap();
 
-                if bar.tbase > bar.tmax - 15.0 && !bar.overdrive || bar.locked {
+                if bar.locked {
                     return 1;
+                }
+                if bar.tbase >= bar.smax && !bar.overdrive {
+                    bar.overdrive = true;
                 }
 
                 bar.is_timing = true;
-                let temp = bar.tbase;
-                if bar.s >= bar.smax {
-                    bar.tbase = bar.tmax;
-                }
-                if bar.tbase >= bar.tmax && !bar.overdrive {
-                    bar.tbase = temp;
-                    let val = bar.tmax - bar.tbase;
-
-                    bar.overdrive = true;
-                    bar.s = bar.smax - val.min((0.24 * bar.smax) + 15.0);
-                }
             }
 
             loop {
-                interval.tick().await;
-                let mut bars = state.bars.lock().unwrap();
+                {
+                    let mut bars = state.bars.lock().unwrap();
 
+                    let bar = bars.get_mut(id as usize).unwrap();
+                    if bar.s >= bar.smax {
+                        if bar.overdrive && bar.s_reduction >= bar.overdrive_val {
+                            bar.locked = true;
+                            bar.tbase = bar.tmax;
+                        }
+                        bar.s = bar.smax;
+                        bar.is_timing = false;
+
+                        let mut timer = state.timer.lock().unwrap();
+                        *timer = Some(Bar::by_id(5).start_idle(state.clone()));
+
+                        break 0;
+                    }
+                }
+                interval.tick().await;
+
+                let mut bars = state.bars.lock().unwrap();
                 let bar = bars.get_mut(id as usize).unwrap();
                 let c = bar.c;
-
-                if c >= 1.0 {
-                    bar.tbase += time * bar.c;
+                let smax = if bar.overdrive {
+                    bar.smax + bar.overdrive_val
                 } else {
-                    bar.tbase += time;
-                }
-                bar.s += time;
+                    bar.smax
+                };
 
-                if bar.s >= bar.smax {
-                    if bar.overdrive || bar.s_reduction >= (0.24 * bar.smax) + 15.0 {
-                        bar.locked = true;
-                    }
-                    bar.tbase = bar.tmax;
-                    bar.s = bar.smax;
-                    bar.is_timing = false;
-                    break 0;
-                }
+                bar.s = smax.min(bar.s + time);
+                bar.tbase = smax.min(bar.tbase + time);
 
                 bars.iter_mut().for_each(|bar_f| {
                     if bar_f.id != id {
-                        bar_f.tbase -= time * c;
-                        if bar_f.tbase < 0.0 {
-                            bar_f.tbase = 0.0
-                        }
-                        if bar_f.s_reduction < (bar_f.smax * 0.24) + 15.0 && !bar_f.overdrive {
-                            if !((bar_f.s - time * c) < 0.0) {
-                                bar_f.s -= time * c;
-                                bar_f.s_reduction += c * time;
-                            }
-                        } else {
+                        bar_f.reduce_tbase(time, c);
+                        bar_f.reduce_s(time, c);
+                    }
+
+                    if bar_f.id == id {
+                        if bar_f.tbase > bar_f.smax {
                             bar_f.overdrive = true;
                         }
                     }
                 });
             }
         })
+    }
+
+    fn reset(&mut self) {
+        self.locked = false;
+        self.s = 0.0;
+        self.s_reduction = 0.0;
+        self.overdrive = false;
+        self.tbase = 0.0;
+    }
+    fn reduce_tbase(&mut self, time: f64, c: f64) {
+        if self.locked {
+            self.tbase -= (time * c).max(0.0);
+
+            if self.tbase <= 0.0 {
+                self.reset();
+            }
+        }
+    }
+    fn reduce_s(&mut self, time: f64, c: f64) {
+        if self.locked {
+            let percentage = self.tbase.max(0.1) / self.tmax;
+            let s = percentage * self.smax;
+            self.s = s.max(0.0);
+        }
+        if self.s_reduction < self.overdrive_val {
+            if !(self.s - (time * c) < 0.0) {
+                self.s -= time * c;
+                self.s_reduction += c * time;
+            }
+        }
     }
 }
 
@@ -288,7 +387,7 @@ impl Voucher {
             description: desc,
         }
     }
-    fn get_templates(user: &User) -> Vec<Self> {
+    fn _get_templates(user: &User) -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
         let codes: [u16; 7] = [1, 2, 3, 4, 5, 24, 999];
 
@@ -1337,15 +1436,30 @@ async fn dailies(
 
         match req.id {
             0 => {
-                let mut bars = state.bars.lock().unwrap();
-                bars.iter_mut().for_each(|bar| {
-                    bar.locked = false;
-                    bar.s_reduction = 0.0;
-                    bar.s -= ((8.0 * 60.0) as f64).max(0.0);
-                    bar.tbase -= ((8.0 * 60.0) as f64).max(0.0);
-                    bar.is_timing = false;
-                    bar.overdrive = false;
-                });
+                {
+                    let mut bars = state.bars.lock().unwrap();
+                    bars.iter_mut().for_each(|bar| {
+                        bar.s_reduction = 0.0;
+                        bar.s = bar.s - ((60.0 as f64).max(0.0));
+                        bar.tbase = bar.tbase - (((8.0 * 60.0) as f64).max(0.0));
+                        bar.is_timing = false;
+                        bar.overdrive = false;
+
+                        if bar.id == 5 {
+                            bar.reset();
+                        }
+                    });
+                    bars.iter_mut().filter(|f| f.locked).for_each(|bar| {
+                        if bar.tbase <= 0.0 {
+                            bar.locked = false;
+                        }
+                    });
+
+                    let bar = bars.get_mut(5).unwrap();
+                    *bar = Bar::by_id(5);
+                    let mut timer = state.timer.lock().unwrap();
+                    *timer = Some(bar.start_idle(state.clone()));
+                }
 
                 user.astrum += 240;
                 rw_astrum += 240;
@@ -1682,11 +1796,15 @@ async fn bars(
     } else {
         match req.id {
             255 => Err(StatusCode::FORBIDDEN),
+            5 => Err(StatusCode::FORBIDDEN),
             _ => match state.timer.lock() {
                 Ok(mut timer_guard) => {
                     if let Some(timer) = timer_guard.take() {
                         timer.abort();
+
                         let mut result = state.bars.lock().unwrap();
+
+                        let current_id = result.iter().filter(|f| f.is_timing).next().unwrap().id;
 
                         result.iter_mut().filter(|f| f.is_timing).for_each(|bar| {
                             bar.is_timing = false;
@@ -1696,8 +1814,16 @@ async fn bars(
                         user.bars = bars;
 
                         let _ = save_user(&user, &conn, &state);
-                        if !(user.active_bar == req.id) {
-                            let status = Bar::new(req.id).start_timer(state.clone());
+                        if req.id == current_id {
+                            *timer_guard = Some(Bar::by_id(5).start_idle(state.clone()));
+                            return Err(StatusCode::OK);
+                        }
+                        if req.id == 5 {
+                            return Err(StatusCode::FORBIDDEN);
+                        }
+
+                        if !(current_id == req.id) {
+                            let status = Bar::by_id(req.id).start_timer(state.clone());
 
                             if status.is_finished() {
                                 return Err(StatusCode::FORBIDDEN);
@@ -1711,8 +1837,11 @@ async fn bars(
 
                         Err(StatusCode::ACCEPTED)
                     } else {
+                        if req.id == 5 {
+                            return Err(StatusCode::FORBIDDEN);
+                        }
                         let result = state.bars.lock().unwrap();
-                        let status = Bar::new(req.id).start_timer(state.clone());
+                        let status = Bar::by_id(req.id).start_timer(state.clone());
                         let bars = result.clone();
                         user.bars = bars;
 
@@ -1762,7 +1891,6 @@ async fn main() {
         user.pause_drip = true;
 
         let mut bars = state.bars.lock().unwrap();
-        //*bars = user.bars.clone();
         *bars = user.bars.clone();
 
         let _ = state_tmp.repo.save(&user, &conn);

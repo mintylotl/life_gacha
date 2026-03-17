@@ -6,43 +6,49 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function det_id() {
   let device_id = localStorage.getItem("device_id");
-
   if (device_id) {
-    const barpage = new BarPage();
+    window.addEventListener("DOMContentLoaded", async () => {
+      const barpage = new BarPage();
+      const update_func = async (barPage: BarPage, cat: any) => {
+        let catg = cat as keyof typeof barPage;
 
-    const update_func = async (barPage: BarPage, cat: any) => {
-      let catg = cat as keyof typeof barPage;
-      while (barPage[catg].isTiming) {
-        updateBars(barpage, 255);
+        await updateBars(barpage, 255);
+        while (barPage[catg].isTiming) {
+          await updateBars(barpage, 255);
+          console.log(barPage[catg].isTiming);
+          await sleep(1000);
+        }
+      };
+      const init_func = async function (
+        barpage: BarPage,
+        id: number,
+        cat: string,
+      ) {
+        let catg = cat as keyof typeof barpage;
+        if (barpage[catg].isLocked || id === 5) {
+          await updateBars(barpage, 255);
+          update_func(barpage, catg);
+          return;
+        }
 
-        await sleep(30000);
-      }
-    };
-    const init_func = async function (
-      barpage: BarPage,
-      id: number,
-      cat: string,
-    ) {
-      let catg = cat as keyof typeof barpage;
-      if (barpage[catg].isLocked) {
-        return;
-      }
+        await updateBars(barpage, id);
+        await updateBars(barpage, 255);
 
-      await updateBars(barpage, id);
+        update_func(barpage, catg);
+      };
+
       await updateBars(barpage, 255);
 
-      update_func(barpage, catg);
-    };
+      (Object.keys(barpage) as Array<keyof BarPage>).forEach((key, idx) => {
+        barpage[key].onClick = async () => {
+          init_func(barpage, idx, key);
+        };
+        barpage[key].render();
+      });
 
-    await updateBars(barpage, 255);
-
-    (Object.keys(barpage) as Array<keyof BarPage>).forEach((key, idx) => {
-      barpage[key].onClick = async () => {
-        init_func(barpage, idx, key);
-      };
+      init(barpage);
     });
 
-    init();
     return;
   }
 
@@ -87,6 +93,8 @@ interface BarpageResp {
   locked: boolean;
   is_timing: boolean;
   overdrive: boolean;
+  overdrive_val: number;
+  s_reduction: number;
 }
 async function updateBars(barpage: BarPage, id: number) {
   let payload;
@@ -106,8 +114,6 @@ async function updateBars(barpage: BarPage, id: number) {
 
     if (resp.ok) {
       data.forEach((bar) => {
-        console.log(`Bar ${bar.id}: Overdrive: ${bar.overdrive}`);
-        console.log(`Bar ${bar.id}: tBase: ${bar.tbase}`);
         if (bar.id === 0) {
           barpage.stability.c = bar.c;
           barpage.stability.currentS = bar.s;
@@ -149,6 +155,14 @@ async function updateBars(barpage: BarPage, id: number) {
           barpage.meta.isTiming = bar.is_timing;
           barpage.meta.isOverdrive = bar.overdrive;
         }
+        if (bar.id === 5) {
+          barpage.idle.c = bar.c;
+          barpage.idle.currentS = bar.s;
+          barpage.idle.sMax = bar.smax;
+          barpage.idle.isLocked = bar.locked;
+          barpage.idle.isTiming = bar.is_timing;
+          barpage.idle.isOverdrive = bar.overdrive;
+        }
       });
     }
   } catch {
@@ -172,12 +186,13 @@ class VectorBar {
   constructor(public label: string) {
     this.element = document.createElement("section");
     this.element.className =
-      "space-y-3 p-4 bg-slate-900/50 rounded-xl border border-slate-800 transition-all";
+      "w-full space-y-3 p-4 bg-slate-900/50 rounded-xl border border-slate-800 transition-all";
 
     this.element.addEventListener("click", () => {
-      if (this.onClick) this.onClick();
+      if (this.onClick) {
+        this.onClick();
+      }
     });
-    this.render();
   }
 
   // Reactive setters
@@ -224,13 +239,13 @@ class VectorBar {
     return this._isLocked;
   }
   get currentS(): number {
-    return this.currentS;
+    return this._currentS;
   }
   get sMax(): number {
-    return this.sMax;
+    return this._sMax;
   }
   get c(): number {
-    return this.c;
+    return this._c;
   }
   get tBase(): number {
     return this._tBase;
@@ -245,7 +260,7 @@ class VectorBar {
     const labelEl = this.element.querySelector(".label") as HTMLElement;
 
     // Logic for color and width
-    const percentage = Math.min((this._currentS / this._sMax) * 100, 100);
+    let percentage = Math.min((this._currentS / this._sMax) * 100, 100);
 
     // UI State Logic
     if (this._isLocked) {
@@ -275,17 +290,20 @@ class VectorBar {
     stats.innerHTML = `C: ${this._c.toFixed(1)} | Smax: ${this._sMax.toFixed(1)} | Cur: ${this._currentS.toFixed(1)}`;
   }
 
-  private render() {
+  public render() {
+    this.element.classList.add("w-full");
     this.element.innerHTML = `
-      <div class="flex justify-around w-[40vw]">
-        <span class="label w-[200px] text-sm font-medium text-slate-100">${this.label}</span>
-        <span class="stats text-xs font-mono text-slate-500"></span>
+      <div class="flex justify-between items-center w-full">
+        <span class="label text-lg font-medium text-slate-100">${this.label}</span>
+        <span class="stats text-xs font-mono text-slate-500 uppercase tracking-wider"></span>
       </div>
-      <div class="h-4 w-full bg-slate-800 rounded-full overflow-hidden border border-slate-700">
-        <div class="fill-bar h-full w-0 transition-all duration-500"></div>
+      <div class="h-4 bg-slate-800 rounded-full overflow-hidden border border-slate-700 w-full">
+        <div class="fill-bar h-full transition-all duration-500"></div>
       </div>
     `;
-    this.update();
+    requestAnimationFrame(() => {
+      this.update();
+    });
   }
 
   get node() {
@@ -298,6 +316,7 @@ export class BarPage {
   public maintenance = new VectorBar("Maintenance");
   public leisure = new VectorBar("Leisure");
   public meta = new VectorBar("Meta");
+  public idle = new VectorBar("IDLE");
 
   constructor(containerId: string = "barpage") {
     const container = document.getElementById(containerId);
@@ -311,27 +330,35 @@ export class BarPage {
     }
 
     // Build the page structure
-    container.className = "min-h-screen bg-slate-900/50 p-8 text-slate-200";
+    // Inside class BarPage constructor
+    container.className =
+      "bg-slate-900 p-8 overflow-y-auto transition-opacity duration-500 w-[45vw] flex justify-center";
     container.innerHTML = `
-      <button id="barpage-homebtn" class="mb-12 px-4 py-2 bg-slate-800 border border-slate-800 rounded hover:bg-slate-700 transition-colors">Home</button>
-      <div class="mx-auto space-y-6 w-[100vw] max-w-[70vw] w" id="bars-list"></div>
+      <div class="mx-auto space-y-6 w-full" id="bars-list"></div>
+      <button id="barpage-homebtn" class="absolute bottom-15 right-15 w-25 h-15 mb-12 px-4 py-2 bg-slate-800 border border-slate-800 rounded hover:bg-slate-700 transition-colors">Home</button>
     `;
 
-    container.classList.add("hidden");
+    let container_p = document.createElement("div");
+    container_p.className =
+      "fixed w-screen h-screen flex justify-around items-center opacity-0 inset-0 z-[100] pointer-events-none";
+    container_p.id = "container_parent";
+    container_p.appendChild(container);
+    document.body.appendChild(container_p);
 
     let btn = document.querySelector("#barpage-homebtn") as HTMLButtonElement;
     btn?.addEventListener("click", () => {
       // 1. Start fading out the container
+      let container = container_p;
       container.classList.add(
         "transition-opacity",
         "duration-500",
         "opacity-0",
+        "pointer-events-none",
       );
+      container.classList.remove("opacity-100");
 
       setTimeout(() => {
         // 2. Hide the container and prepare home (keep it invisible for now)
-        container.classList.add("hidden");
-
         home.classList.add("opacity-0", "transition-opacity", "duration-500");
         home.classList.remove("hidden");
 
@@ -349,7 +376,10 @@ export class BarPage {
       this.maintenance,
       this.leisure,
       this.meta,
-    ].forEach((bar) => list.appendChild(bar.node));
+      this.idle,
+    ].forEach((bar) => {
+      list.appendChild(bar.node);
+    });
   }
 }
 
@@ -565,8 +595,6 @@ async function isrdo(desc: string, coeff: number) {
     let data: ISRDOResponse = await response.json();
 
     if (response.ok) {
-      console.log(`${data.uuid}`);
-
       console.log(
         `created ISRDO ${data.description} with payout: ${data.payout}`,
       );
@@ -2370,15 +2398,12 @@ document.querySelector("#app")!.innerHTML = `
   </div>
 </div>
 </div>
-<div id="barpage" class="bg-slate-800 hidden">
+
+<div id="barpage">
 </div>
 `;
 
 // Event Listeners
-document.querySelector("#bars")?.addEventListener("click", () => {
-  document.querySelector("#app-main")?.classList.add("hidden");
-  document.querySelector("#barpage")?.classList.remove("hidden", "opacity-0");
-});
 document
   .querySelector("#pull-btn")
   ?.addEventListener("click", () => apiActionPull("/pull", [30, 750], true));
@@ -2675,7 +2700,26 @@ async function updateTimerBtn() {
         </button>`;
   }
 }
-async function runTask() {
+async function runTask(barpage: BarPage) {
+  document.querySelector("#bars")?.addEventListener("click", () => {
+    const container = document.querySelector("#container_parent")!;
+    const home = document.querySelector("#app-main")!;
+
+    container.classList.add("transition-opacity", "duration-500");
+    home.classList.add("hidden");
+
+    setTimeout(() => {
+      container.classList.add("opacity-0");
+
+      setTimeout(() => {
+        container.classList.remove("opacity-0");
+        container.classList.remove("pointer-events-none");
+        container.classList.add("opacity-100");
+
+        updateBars(barpage, 255);
+      }, 20);
+    }, 250);
+  });
   while (true) {
     queryUserFunds();
     updateTimerBtn();
@@ -2696,8 +2740,8 @@ async function runTask() {
     await sleep(45000);
   }
 }
-async function init() {
-  runTask();
+async function init(barpage: BarPage) {
+  runTask(barpage);
 }
 
 det_id();

@@ -1,7 +1,7 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get, routing::post};
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use rand::{Rng, rng};
 use rusqlite::Error as rusqError;
 use rusqlite::{Connection, params};
@@ -10,14 +10,15 @@ use serde_json::Error as serdeError;
 use serde_json::{self};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
-// Custom Types
+// Custom Types1
+use BarType::*;
 use Coeff::*;
 use gacha_protocol::{self, PityCtx, Rarities, roll};
-use std::time::Duration as Duration_Time;
+//use std::time::Duration as Duration_Time;
 
 #[derive(thiserror::Error, Debug)]
 enum PersistenceError {
@@ -27,8 +28,8 @@ enum PersistenceError {
     DBError(#[from] rusqError),
     #[error("User Not Found")]
     NotFound,
-    #[error("Invalid ID, Unable to construct voucher")]
-    InvalidIDVoucher,
+    //#[error("Invalid ID, Unable to construct voucher")]
+    //InvalidIDVoucher,
 }
 struct SqliteRepo {
     db: Mutex<Connection>,
@@ -41,18 +42,31 @@ struct Voucher {
     uuid: Uuid,
     name: String,
     cost: u64,
-    hours: u32,
+    #[serde(default)]
+    dur: f64,
     new: bool,
     description: String,
+    coeff: Coeff,
 }
-#[derive(Clone)]
+impl Voucher {
+    fn minutes(&self) -> f64 {
+        self.dur.round()
+    }
+    fn hours(&self) -> f64 {
+        ((self.dur / 60.0) * 100.0).round() / 100.0
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
 enum Coeff {
     PureC(f64, u32),
     FunG(f64, u32),
     G(f64, u32),
     Expansion(f64, u32),
     Base(f64, u32),
+    Maintenance(f64, u32),
+    System(f64, u32),
 }
+
 impl Coeff {
     fn get_val(&self) -> u64 {
         if let PureC(coeff, base_cost) = self {
@@ -68,6 +82,12 @@ impl Coeff {
             return (*coeff * *base_cost as f64) as u64;
         }
         if let Base(coeff, base_const) = self {
+            return (*coeff * *base_const as f64) as u64;
+        }
+        if let Maintenance(coeff, base_const) = self {
+            return (*coeff * *base_const as f64) as u64;
+        }
+        if let System(coeff, base_const) = self {
             return (*coeff * *base_const as f64) as u64;
         }
 
@@ -88,6 +108,12 @@ impl Coeff {
     fn base() -> Self {
         Self::Base(1.0, 120)
     }
+    fn maint() -> Self {
+        Self::Maintenance(1.0, 120)
+    }
+    fn system() -> Self {
+        Self::System(1.1, 120)
+    }
 }
 
 impl From<String> for Coeff {
@@ -102,7 +128,9 @@ impl From<&str> for Coeff {
             "fun_g" => Self::fun_g(),
             "exp" => Self::exp(),
             "pure_c" => Self::pure_c(),
-            _ => Self::base(),
+            "maint" => Self::maint(),
+            "base" => Self::base(),
+            _ => Self::system(),
         }
     }
 }
@@ -119,10 +147,97 @@ struct Bar {
     tmax: f64,
     tbase: f64,
     s_reduction: f64,
-    #[serde(default)]
     overdrive_val: f64,
 }
+enum BarType {
+    Stab,
+    Exp,
+    Maint,
+    Leisure,
+    Meta,
+    Idle,
+    Sys,
+}
+impl From<Voucher> for BarType {
+    fn from(value: Voucher) -> Self {
+        match value.coeff {
+            Base(..) => Idle,
+            Expansion(..) => Exp,
+            G(..) => Stab,
+            FunG(..) => Meta,
+            PureC(..) => Leisure,
+            Maintenance(..) => Maint,
+            System(..) => Sys,
+        }
+    }
+}
+impl BarType {
+    fn get_fx_pool(voucher: Voucher, state: AppState) -> Result<JoinHandle<f64>, u8> {
+        let variant: usize = match BarType::from(voucher.clone()) {
+            Stab => 0,
+            Exp => 1,
+            Maint => 2,
+            Leisure => 3,
+            Meta => 4,
+            Idle => 5,
+            Sys => 255,
+        };
 
+        match variant {
+            255 => Err(1),
+            _ => {
+                if let Some(timer) = state.timer.lock().unwrap().take() {
+                    timer.abort();
+                }
+                let mut bars = state.bars.lock().unwrap();
+                let bar = bars.get(variant).unwrap().clone();
+                let mut timer = state.timer.lock().unwrap();
+                let initial_s = bar.s;
+                let id = bar.id;
+
+                let cost_hours = voucher.minutes();
+
+                if bar.smax - bar.s < cost_hours {
+                    return Err(2);
+                }
+
+                bars.iter_mut().for_each(|f| {
+                    f.is_timing = false;
+                });
+                bars.iter_mut().for_each(|f| {
+                    if f.id == id {
+                        f.smax = cost_hours;
+                        f.s = 0.0;
+                    }
+                });
+                let handle_init = bar.start_timer(state.clone());
+                *timer = Some(handle_init.clone());
+
+                let handle = handle_init;
+                let state_i = state.clone();
+                Ok(tokio::spawn(async move {
+                    let mut interval =
+                        tokio::time::interval(Duration::seconds(2).to_std().unwrap());
+                    let init_s = initial_s;
+                    let result = loop {
+                        interval.tick().await;
+                        if handle.is_finished() {
+                            let mut bars = state_i.bars.lock().unwrap();
+                            let bar = bars.get_mut(id as usize).unwrap();
+                            let result = bar.s;
+
+                            bar.smax = Bar::by_id(id).smax;
+                            bar.s += init_s;
+
+                            break result;
+                        }
+                    };
+                    result
+                }))
+            }
+        }
+    }
+}
 impl Bar {
     fn _vec() -> Vec<Bar> {
         let mut vec = Vec::<Bar>::new();
@@ -193,11 +308,11 @@ impl Bar {
         }
     }
 
-    fn start_idle(&self, state: AppState) -> JoinHandle<u8> {
+    fn start_idle(&self, state: AppState) -> AbortHandle {
         let id = self.id;
         tokio::spawn(async move {
             let state = state;
-            let mut interval = tokio::time::interval(Duration::minutes(5).to_std().unwrap());
+            let mut interval = tokio::time::interval(Duration::minutes(1).to_std().unwrap());
             let mut eat = false;
             interval.tick().await;
 
@@ -210,7 +325,7 @@ impl Bar {
                 interval.tick().await;
                 let mut bars = state.bars.lock().unwrap();
                 let bar = bars.get_mut(id as usize).unwrap();
-                bar.s += 5.0;
+                bar.s += 1.0;
 
                 if bar.s >= bar.smax {
                     if !bar.overdrive {
@@ -227,21 +342,23 @@ impl Bar {
                     let handle = bars.get_mut(3).unwrap().start_timer(state.clone());
                     let mut timer = state.timer.lock().unwrap();
                     *timer = Some(handle);
-                    break 0;
+
+                    break;
                 }
             }
         })
+        .abort_handle()
     }
 
-    fn start_timer(&self, state: AppState) -> JoinHandle<u8> {
+    fn start_timer(&self, state: AppState) -> AbortHandle {
         let state_i = state.clone();
         let id = self.id;
 
         tokio::spawn(async move {
-            let time = 5.0;
+            let time = 15.0;
             let state = state_i;
             let id = id;
-            let mut interval = tokio::time::interval(Duration::minutes(5).to_std().unwrap());
+            let mut interval = tokio::time::interval(Duration::seconds(5).to_std().unwrap());
             interval.tick().await;
 
             {
@@ -249,17 +366,16 @@ impl Bar {
 
                 if bars.iter().filter(|f| !f.locked).count() == 1 {
                     bars.iter_mut().filter(|f| !f.locked).for_each(|bar| {
-                        bar.s -= bar.overdrive_val;
-                        bar.s_reduction = bar.overdrive_val;
+                        bar.reduce_s(bar.overdrive_val - bar.s_reduction, 1.0);
                     });
                 }
 
                 let bar = bars.get_mut(id as usize).unwrap();
 
                 if bar.locked {
-                    return 1;
+                    return;
                 }
-                if bar.tbase >= bar.smax && !bar.overdrive {
+                if bar.tbase > bar.smax && !bar.overdrive {
                     bar.overdrive = true;
                 }
 
@@ -277,12 +393,13 @@ impl Bar {
                             bar.tbase = bar.tmax;
                         }
                         bar.s = bar.smax;
+                        bar.smax = Bar::by_id(id).smax;
                         bar.is_timing = false;
 
                         let mut timer = state.timer.lock().unwrap();
                         *timer = Some(Bar::by_id(5).start_idle(state.clone()));
 
-                        break 0;
+                        break;
                     }
                 }
                 interval.tick().await;
@@ -297,7 +414,7 @@ impl Bar {
                 };
 
                 bar.s = smax.min(bar.s + time);
-                bar.tbase = smax.min(bar.tbase + time);
+                bar.tbase = (smax + 1.0).min(bar.tbase + time);
 
                 bars.iter_mut().for_each(|bar_f| {
                     if bar_f.id != id {
@@ -313,6 +430,7 @@ impl Bar {
                 });
             }
         })
+        .abort_handle()
     }
 
     fn reset(&mut self) {
@@ -341,24 +459,23 @@ impl Bar {
             if !(self.s - (time * c) < 0.0) {
                 self.s -= time * c;
                 self.s_reduction += c * time;
+            } else {
+                self.s = 0.0;
             }
         }
     }
 }
 
+fn round_h(val: f64) -> f64 {
+    ((val / 60.0) * 100.0).round() / 100.0
+}
 impl Voucher {
-    fn by_id(id: u64, user: &User, state: Option<&AppState>) -> Result<Self, PersistenceError> {
+    fn by_id(id: u64, user: &User) -> Result<Self, PersistenceError> {
         match id {
             999 => Ok(Self::mythic_week()),
             1 => Ok(Self::off_day()),
-            2 => Ok(Self::gaming(2)),
             4 => Ok(Self::coffee()),
-            5 => Ok(Self::coffee_standard()),
-            24 => Ok(Self::japanese(2)),
             _ => {
-                if state.is_none() {
-                    return Err(PersistenceError::InvalidIDVoucher);
-                }
                 let mut vouchers = user.templates.clone();
                 vouchers.retain(|v| v.id == id);
 
@@ -373,26 +490,28 @@ impl Voucher {
         uuid: Uuid,
         name: String,
         cost: u64,
-        hours: u32,
+        dur: f64,
         new: bool,
         desc: String,
+        coeff: Coeff,
     ) -> Self {
         Self {
             id,
             uuid,
             name,
             cost,
-            hours,
+            dur,
             new,
             description: desc,
+            coeff,
         }
     }
     fn _get_templates(user: &User) -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
-        let codes: [u16; 7] = [1, 2, 3, 4, 5, 24, 999];
+        let codes: [u16; 3] = [1, 4, 999];
 
         for x in codes.into_iter() {
-            vec.push(Voucher::by_id(x as u64, user, None).unwrap());
+            vec.push(Voucher::by_id(x as u64, user).unwrap());
         }
         vec
     }
@@ -415,9 +534,10 @@ impl Voucher {
         }
 
         let coeff: Coeff = voucher.coeff.into();
-        let cost = coeff.get_val() * voucher.hours as u64;
+        //let cost = coeff.get_val() * voucher.dur as u64;
+        let cost = 3;
         let name = format!("{}", voucher.name);
-        let hours = voucher.hours;
+        let dur = voucher.dur * 60.0;
         let description = voucher.description;
 
         Voucher::new(
@@ -425,10 +545,29 @@ impl Voucher {
             uuid::Uuid::now_v7(),
             name,
             cost,
-            hours,
+            dur,
             true,
             description,
+            coeff,
         )
+    }
+    fn from_purchase_req(req: PurchaseRequest, state: &AppState) -> Self {
+        let user = load_user(req.userid, state).unwrap().0;
+        let mut req_voucher = Voucher::by_id(req.id, &user).unwrap();
+
+        match req_voucher.id {
+            1 | 4 | 999 => {
+                req_voucher.dur = 1.0;
+                return req_voucher;
+            }
+            _ => (),
+        }
+
+        req_voucher.name = format!("{} [{}H]", &req_voucher.name, req.dur.to_string());
+        req_voucher.cost = 3;
+        req_voucher.dur = (req.dur * 60.0).round();
+
+        req_voucher
     }
     fn mythic_week() -> Self {
         Self {
@@ -437,8 +576,9 @@ impl Voucher {
             name: "Mythic Week Off".to_string(),
             cost: 35480,
             new: true,
-            hours: 168_u32,
+            dur: 168.0 * 60.0,
             description: "Get a full week off".to_string(),
+            coeff: Coeff::pure_c(),
         }
     }
     fn off_day() -> Self {
@@ -447,23 +587,10 @@ impl Voucher {
             uuid: uuid::Uuid::now_v7(),
             name: String::from("Full Day Off"),
             cost: 5720,
-            hours: 24_u32,
+            dur: 24.0 * 60.0,
             new: true,
             description: String::from("Get one full day off"),
-        }
-    }
-    fn gaming(hours: u32) -> Self {
-        let coeff = Coeff::pure_c().get_val();
-        let cost = coeff * hours as u64;
-
-        Self {
-            id: 2,
-            uuid: uuid::Uuid::now_v7(),
-            name: format!("Gaming Session ({}H)", hours),
-            cost,
-            hours,
-            new: true,
-            description: format!("{} Hour Gaming Session", hours),
+            coeff: Coeff::pure_c(),
         }
     }
     fn coffee() -> Self {
@@ -472,33 +599,10 @@ impl Voucher {
             uuid: uuid::Uuid::now_v7(),
             name: String::from("Coffee (Premium)"),
             cost: 150,
-            hours: 0_u32,
+            dur: 0.0 * 60.0,
             new: true,
             description: String::from("Get 1 cup of Premium Coffee (250ml)"),
-        }
-    }
-    fn coffee_standard() -> Self {
-        Self {
-            id: 5,
-            uuid: uuid::Uuid::now_v7(),
-            name: String::from("Coffee (Standard)"),
-            cost: 75,
-            hours: 0_u32,
-            new: true,
-            description: String::from("Get 1 cup of Coffee Standard (250ml)"),
-        }
-    }
-    fn japanese(hours: u32) -> Self {
-        let coeff = Coeff::exp().get_val();
-        let cost = coeff * hours as u64;
-        Self {
-            id: 24,
-            uuid: uuid::Uuid::now_v7(),
-            name: format!("Japanese Studies ({}H)", hours),
-            cost,
-            hours,
-            new: true,
-            description: format!("Slip to study Japanese for {} Hours", hours),
+            coeff: Coeff::base(),
         }
     }
 }
@@ -666,18 +770,6 @@ impl TryFrom<Rarities> for SerializedRarity {
     }
 }
 
-#[derive(Deserialize)]
-struct TimerRequest {
-    userid: String,
-    category: Category,
-    info: Option<bool>,
-}
-#[derive(Serialize)]
-struct TimerResponse {
-    status: String,
-    category: Category,
-    reward: Option<u64>,
-}
 #[derive(Serialize, Deserialize, Clone)]
 struct Timer {
     id: String,
@@ -685,22 +777,6 @@ struct Timer {
     started: DateTime<Utc>,
     ended: Option<DateTime<Utc>>,
     category: Category,
-}
-impl TimerResponse {
-    fn new(status: String, cat: Category) -> Self {
-        Self {
-            status,
-            category: cat,
-            reward: None,
-        }
-    }
-    fn already_exists(cat: Category) -> Self {
-        Self {
-            status: "Timer Already Active".to_string(),
-            category: cat,
-            reward: None,
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -726,7 +802,7 @@ impl TryFrom<&User> for PityCtx {
 #[derive(Clone)]
 struct AppState {
     repo: Arc<SqliteRepo>,
-    timer: Arc<Mutex<Option<JoinHandle<u8>>>>,
+    timer: Arc<Mutex<Option<AbortHandle>>>,
     bars: Arc<Mutex<Vec<Bar>>>,
 }
 
@@ -772,14 +848,9 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                 vouchers.push(Voucher::mythic_week());
                 rw_vouchers += 1;
             } else {
-                vouchers.push(Voucher::gaming(2_u32));
-                vouchers.push(Voucher::gaming(2_u32));
                 vouchers.push(Voucher::off_day());
 
-                for _x in 0..3 {
-                    vouchers.push(Voucher::japanese(4_u32));
-                }
-                rw_vouchers += 6;
+                rw_vouchers += 1;
                 user.has_slip = true;
             }
         }
@@ -791,19 +862,15 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.total_flux_aq += 240;
 
             if quick_roll() < 64 {
-                vouchers.push(Voucher::japanese(2_u32));
                 rw_vouchers += 1;
             } else {
-                vouchers.push(Voucher::japanese(1_u32));
                 rw_vouchers += 1;
             }
 
             if quick_roll() < 16 {
-                vouchers.push(Voucher::japanese(4_u32));
                 rw_vouchers += 1;
             }
             if quick_roll() < 16 {
-                vouchers.push(Voucher::gaming(2_u32));
                 rw_vouchers += 1;
             }
         }
@@ -821,9 +888,10 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
                     uuid::Uuid::now_v7(),
                     "15 Minute Break".into(),
                     (Coeff::pure_c().get_val() as f64 * 0.25) as u64,
-                    0_u32,
+                    0.0,
                     true,
                     "Take a 15 minute breather break".into(),
+                    Coeff::pure_c(),
                 ));
                 rw_vouchers += 1;
             }
@@ -837,7 +905,7 @@ fn apply_outcome(user: &mut User, outcome: &Rarities) -> u8 {
             user.total_flux_aq += 4;
 
             if quick_roll() == 24 {
-                vouchers.push(Voucher::gaming(4));
+                vouchers.push(Voucher::off_day());
                 rw_vouchers += 1;
             }
         }
@@ -878,165 +946,8 @@ async fn handle_pull(
         vouchers: reward,
     }))
 }
-fn gen_timer_id() -> String {
-    "1111".to_string()
-}
 
-fn is_timedout(
-    user: &mut User,
-    catg: Category,
-    conn: &MutexGuard<'_, Connection>,
-    state: &AppState,
-) -> bool {
-    if let Some(ref timer) = user.timer {
-        let dur = match timer.category {
-            Category::SNode => 45,
-            Category::ANode => 15,
-            Category::BNode => 5,
-        };
-        if timer.ended.is_some() {
-            let timeout = Duration::minutes(dur as i64).num_minutes();
-            let duration = Utc::now() - timer.ended.unwrap();
-
-            if duration.num_minutes() < timeout || timer.category != catg {
-                user.pause_drip = true;
-                let _ = save_user(user, conn, state);
-                return true;
-            }
-        }
-    }
-    return false;
-}
-async fn start_timer(
-    State(state): State<AppState>,
-    Json(req): Json<TimerRequest>,
-) -> Result<Json<TimerResponse>, StatusCode> {
-    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
-
-    if user.active_timer {
-        return Ok(Json(TimerResponse::already_exists(
-            user.timer.unwrap().category,
-        )));
-    }
-    if req.info.is_some() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    if is_timedout(&mut user, req.category, &conn, &state) {
-        return Err(StatusCode::REQUEST_TIMEOUT);
-    }
-
-    user.timer = Some(Timer {
-        category: req.category,
-        ended: None,
-        started: Utc::now(),
-        id: gen_timer_id(),
-        owner: user.id.clone(),
-    });
-
-    user.pause_drip = true;
-
-    let timer_mv = user.timer.clone().unwrap();
-    let state_mv = state.clone();
-    let userid = req.userid.clone();
-    tokio::spawn(async move {
-        let timer = timer_mv;
-        let state = state_mv;
-        let userid = userid;
-        let mut now: DateTime<Utc>;
-
-        loop {
-            now = Utc::now();
-            let overflow = match timer.category {
-                Category::SNode => {
-                    if (now - timer.started).num_hours() >= 2 {
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Category::ANode => {
-                    if (now - timer.started).num_hours() >= 1 {
-                        true
-                    } else {
-                        false
-                    }
-                }
-                Category::BNode => {
-                    if (now - timer.started).num_minutes() >= 30 {
-                        true
-                    } else {
-                        false
-                    }
-                }
-            };
-            if overflow {
-                let (mut user, conn) = load_user(userid.clone(), &state).unwrap();
-                if user.timer.is_none() {
-                    return;
-                } else {
-                    let user_i = user.timer.clone().unwrap();
-                    if user_i.started != timer.started {
-                        return;
-                    }
-                }
-
-                let mut timer_stored = user.timer.unwrap();
-                timer_stored.ended = Some(Utc::now());
-
-                user.timer = Some(timer_stored);
-                let _ = state.repo.save(&user, &conn);
-                break;
-            }
-
-            let _ = tokio::time::sleep(std::time::Duration::from_mins(5)).await;
-        }
-    });
-
-    user.active_timer = true;
-    let _ = state.repo.save(&user, &conn);
-
-    Ok(Json(TimerResponse {
-        status: "Timing...".to_string(),
-        category: user.timer.unwrap().category,
-        reward: None,
-    }))
-}
-
-async fn stop_timer(
-    State(state): State<AppState>,
-    Json(req): Json<TimerRequest>,
-) -> Result<Json<TimerResponse>, StatusCode> {
-    let (mut user, conn) = load_user(req.userid, &state)?;
-
-    if !user.active_timer || user.timer.is_none() {
-        user.active_timer = false;
-        let _ = save_user(&user, &conn, &state);
-        return Ok(Json(TimerResponse::new(
-            "No Active Timers".to_string(),
-            Category::SNode,
-        )));
-    }
-
-    let timer: Timer = user.timer.clone().unwrap();
-    let reward = Some(resolve_timer(timer.clone()));
-
-    if !is_timedout(&mut user, timer.category, &conn, &state) {
-        user.pause_drip = false;
-    }
-
-    user.active_timer = false;
-    user.astrum += reward.unwrap();
-    user.total_astrum_aq += reward.unwrap() as u128;
-
-    let _ = state.repo.save(&user, &conn);
-
-    Ok(Json(TimerResponse {
-        status: format!("Timer Stopped"),
-        category: timer.category,
-        reward,
-    }))
-}
+/*
 fn resolve_timer(timer: Timer) -> u64 {
     let reward: i64;
     let duration: Duration;
@@ -1069,7 +980,7 @@ fn resolve_timer(timer: Timer) -> u64 {
     } else {
         return reward as u64;
     }
-}
+}*/
 
 #[derive(Deserialize, Clone)]
 struct VoucherRequest {
@@ -1104,7 +1015,7 @@ async fn get_user_vouchers(
 #[derive(Deserialize)]
 struct ReqVoucher {
     name: String,
-    hours: u32,
+    dur: f64,
     coeff: String,
     description: String,
 }
@@ -1119,7 +1030,7 @@ async fn create(
 ) -> Result<StatusCode, StatusCode> {
     let (mut user, conn) = load_user(req.userid, &state)?;
     let voucher = req.voucher;
-    if voucher.hours < 1 || voucher.name.is_empty() {
+    if voucher.dur < 0.1 || voucher.name.is_empty() {
         return Err(StatusCode::LENGTH_REQUIRED);
     }
 
@@ -1134,20 +1045,16 @@ struct PurchaseRequest {
     userid: String,
     amount: u8,
     id: u64,
-    hours: u32,
+    dur: f64,
 }
 async fn purchase(
     State(state): State<AppState>,
     Json(req): Json<PurchaseRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+    let req_voucher = Voucher::from_purchase_req(req.clone(), &state);
 
-    let mut req_voucher =
-        Voucher::by_id(req.id, &user, Some(&state)).map_err(|_| StatusCode::NOT_FOUND)?;
-    let cost = req_voucher.cost * req.amount as u64 * req.hours as u64;
-    req_voucher.name = format!("{} [{}H]", &req_voucher.name, req.hours.to_string());
-    req_voucher.cost = req_voucher.cost * req.hours as u64;
-    req_voucher.hours = req.hours;
+    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
+    let cost = req_voucher.cost * req.amount as u64 * req.dur as u64;
 
     if user.flux < cost as i128 || req.amount < 1 {
         return Err(StatusCode::FORBIDDEN);
@@ -1211,69 +1118,100 @@ async fn consume(
     State(state): State<AppState>,
     Json(req): Json<ConsumeRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let (mut user, conn) = load_user(req.userid.clone(), &state)?;
     let vec: Vec<Voucher>;
+    let voucher_opt: Option<Voucher>;
+    {
+        let user = load_user(req.userid.clone(), &state)?.0;
 
-    let voucher_opt = user
-        .vouchers
-        .clone()
-        .into_iter()
-        .filter(|v| v.uuid == req.uuid)
-        .next();
+        voucher_opt = user
+            .vouchers
+            .clone()
+            .into_iter()
+            .filter(|v| v.uuid == req.uuid)
+            .next();
+    }
 
     if let Some(voucher) = voucher_opt {
-        let val = user.timeout_map.get_mut(&voucher.id);
-        let now = Utc::now();
-        let now_t = now.timestamp();
+        let avail = BarType::get_fx_pool(voucher.clone(), state.clone());
+        match avail {
+            Ok(result) => {
+                let username = req.userid.clone();
+                let state_i = state.clone();
 
-        match val {
-            Some(x) => {
-                let last_consumed = DateTime::from_timestamp(*x, 0).unwrap();
-                let duration = now - last_consumed;
-                let mut hours = 0.0;
-                let _ = hours;
+                tokio::spawn(async move {
+                    let state = state_i;
+                    let username = username;
 
-                let coeff = {
-                    match voucher.hours {
-                        h if h < 1 => 0.24,
-                        h if h < 3 => 0.7,
-                        _ => 1.15,
+                    loop {
+                        tokio::time::sleep(Duration::seconds(5).to_std().unwrap()).await;
+                        if result.is_finished() {
+                            let new_res = result.await;
+                            if new_res.is_ok() {
+                                let time = new_res.unwrap();
+
+                                let mut voucher = voucher;
+                                let mut time_remain = voucher.minutes() - time;
+                                let prefix: &str;
+
+                                prefix = match time_remain {
+                                    t if t < 60.0 => "M",
+                                    _ => "H",
+                                };
+
+                                if time_remain <= 5.0 {
+                                    break;
+                                }
+                                let hours_remain = round_h(time_remain);
+                                let minutes_remain = time_remain;
+                                time_remain = match prefix {
+                                    "M" => time_remain.round(),
+                                    _ => hours_remain,
+                                };
+
+                                let hours = voucher.hours();
+                                let mut user = load_user(username.clone(), &state).unwrap().0;
+                                voucher.name = Voucher::by_id(voucher.id, &user).unwrap().name
+                                    + " ["
+                                    + &time_remain.to_string()
+                                    + prefix
+                                    + "]";
+                                voucher.dur = minutes_remain;
+
+                                match time {
+                                    0.0 => (),
+                                    t if t < 5.0 => {
+                                        user.vouchers.push(Voucher::from_purchase_req(
+                                            PurchaseRequest {
+                                                userid: get_username(),
+                                                amount: 1,
+                                                id: voucher.id,
+                                                dur: hours,
+                                            },
+                                            &state,
+                                        ));
+                                    }
+                                    _ => {
+                                        user.vouchers.push(voucher);
+                                    }
+                                }
+
+                                let conn = load_user(username, &state).unwrap().1;
+                                let _ = save_user(&user, &conn, &state);
+                                break;
+                            }
+                            break;
+                        }
                     }
-                };
-                hours = voucher.hours as f64;
-
-                let mut timeout_base = hours * 2.4 * coeff;
-
-                if timeout_base == 0.0 {
-                    timeout_base = 0.5
-                }
-                let timeout_dur = Duration::minutes((timeout_base * 60.0) as i64);
-                let timeout = timeout_dur.num_minutes();
-
-                println!(
-                    "{}\n {}\n {}\n {}\n {}\n {}\n {}",
-                    timeout_dur.num_minutes(),
-                    timeout,
-                    duration.num_minutes(),
-                    coeff,
-                    hours,
-                    timeout_base,
-                    voucher.hours
-                );
-
-                if duration.num_minutes() < timeout {
-                    println!("Timed out!");
-                    return Err(StatusCode::FORBIDDEN);
-                }
-
-                *x = now_t;
+                });
             }
-            None => {
-                let _ = user.timeout_map.insert(voucher.id, Utc::now().timestamp());
-            }
+            Err(error) => match error {
+                2 => return Err(StatusCode::FORBIDDEN),
+                _ => println!("BAR Error!"),
+            },
         }
     }
 
+    let (mut user, conn) = load_user(req.userid, &state).unwrap();
     vec = user
         .vouchers
         .into_iter()
@@ -1307,7 +1245,7 @@ async fn create_advanced(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let (mut user, conn) = load_user(req.userid.clone(), &state)?;
 
-    let voucher = Voucher::by_id(req.id, &user, Some(&state)).map_err(|_| StatusCode::NOT_FOUND)?;
+    let voucher = Voucher::by_id(req.id, &user).map_err(|_| StatusCode::NOT_FOUND)?;
     let cost = (req.amount as u64 * voucher.cost) as i128;
     if user.flux < cost {
         return Err(StatusCode::INSUFFICIENT_STORAGE);
@@ -1322,9 +1260,10 @@ async fn create_advanced(
             uuid::Uuid::now_v7(),
             voucher.name.clone(),
             voucher.cost,
-            voucher.hours,
+            voucher.dur,
             true,
             voucher.description.clone(),
+            voucher.coeff.clone().into(),
         ));
     }
 
@@ -1342,7 +1281,7 @@ struct Daily {
     last_claimed: i64,
 }
 impl Daily {
-    /*fn init() -> Vec<Self> {
+    fn _init() -> Vec<Self> {
         let mut vec: Vec<Self> = Vec::new();
         for i in 0..5 {
             vec.push(Daily {
@@ -1356,7 +1295,7 @@ impl Daily {
         vec[4].claimable = false;
 
         vec
-    }*/
+    }
     fn cycle(offset: u8) -> i64 {
         let now = Utc::now();
         let mut cycle_start = Utc
@@ -1440,8 +1379,8 @@ async fn dailies(
                     let mut bars = state.bars.lock().unwrap();
                     bars.iter_mut().for_each(|bar| {
                         bar.s_reduction = 0.0;
-                        bar.s = bar.s - ((60.0 as f64).max(0.0));
-                        bar.tbase = bar.tbase - (((8.0 * 60.0) as f64).max(0.0));
+                        bar.s = (bar.s - (60.0 as f64)).max(0.0);
+                        bar.tbase = (bar.tbase - (8.0 * 60.0) as f64).max(0.0);
                         bar.is_timing = false;
                         bar.overdrive = false;
 
@@ -1473,10 +1412,10 @@ async fn dailies(
             }
             2 => {
                 user.astrum += 80;
-                user.flux += 300;
+                user.flux += 100;
 
                 rw_astrum += 80;
-                rw_flux += 300;
+                rw_flux += 100;
             }
             3 => {
                 user.astrum += 80;
@@ -1506,7 +1445,6 @@ async fn dailies(
         user.dailies[req.id as usize].last_claimed = Utc::now().timestamp();
 
         user.astrum += 1600;
-        user.vouchers.push(Voucher::gaming(1));
         rw_astrum += 1600;
         rw_vouchers += 1;
 
@@ -1715,6 +1653,7 @@ async fn remove_new_logo(
     Ok(Json("Flipped".into()))
 }
 
+/*
 fn drip(b_state: AppState) {
     tokio::spawn(async {
         let state = b_state;
@@ -1755,7 +1694,7 @@ fn drip(b_state: AppState) {
             let _ = state.repo.save(&user, &conn);
         }
     });
-}
+}*/
 
 async fn pause_dripper(
     State(state): State<AppState>,
@@ -1893,15 +1832,17 @@ async fn main() {
         let mut bars = state.bars.lock().unwrap();
         *bars = user.bars.clone();
 
+        bars.iter_mut().for_each(|f| {
+            f.reset();
+        });
+
         let _ = state_tmp.repo.save(&user, &conn);
     }
 
-    drip(state.clone());
+    //drip(state.clone());
 
     let app = Router::new()
-        .route("/start_timer", post(start_timer))
         .route("/pull", post(handle_pull))
-        .route("/stop_timer", post(stop_timer))
         .route("/get_user_vouchers", post(get_user_vouchers))
         .route("/purchase", post(purchase))
         .route("/user_funds_info", post(get_user_info))

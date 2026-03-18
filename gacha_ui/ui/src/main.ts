@@ -9,16 +9,24 @@ async function det_id() {
   if (device_id) {
     window.addEventListener("DOMContentLoaded", async () => {
       const barpage = new BarPage();
-      const update_func = async (barPage: BarPage, cat: any) => {
-        let catg = cat as keyof typeof barPage;
+      const update_func = async (barpage: BarPage) => {
+        while (true) {
+          const keys = Object.keys(barpage) as Array<keyof BarPage>;
 
-        await updateBars(barpage, 255);
-        while (barPage[catg].isTiming) {
-          await updateBars(barpage, 255);
-          console.log(barPage[catg].isTiming);
-          await sleep(1000);
+          for (const key of keys) {
+            if (barpage[key].isTiming) {
+              while (barpage[key].isTiming) {
+                await updateBars(barpage, 255);
+                await sleep(200);
+              }
+            }
+          }
+
+          await sleep(500);
+          console.log("Checking");
         }
       };
+
       const init_func = async function (
         barpage: BarPage,
         id: number,
@@ -27,26 +35,27 @@ async function det_id() {
         let catg = cat as keyof typeof barpage;
         if (barpage[catg].isLocked || id === 5) {
           await updateBars(barpage, 255);
-          update_func(barpage, catg);
           return;
         }
 
         await updateBars(barpage, id);
         await updateBars(barpage, 255);
-
-        update_func(barpage, catg);
       };
 
       await updateBars(barpage, 255);
 
-      (Object.keys(barpage) as Array<keyof BarPage>).forEach((key, idx) => {
-        barpage[key].onClick = async () => {
-          init_func(barpage, idx, key);
-        };
-        barpage[key].render();
-      });
+      setTimeout(() => {
+        (Object.keys(barpage) as Array<keyof BarPage>).forEach((key, idx) => {
+          barpage[key].onClick = async () => {
+            init_func(barpage, idx, key);
+          };
+          barpage[key].render();
+        });
+      }, 1000);
 
       init(barpage);
+      update_func(barpage);
+      console.log("Initialized");
     });
 
     return;
@@ -68,8 +77,6 @@ async function det_id() {
       localStorage.setItem("device_id", form.get("userid") as string);
       document.querySelector("#user-modal")?.remove();
     });
-
-  init();
 }
 function get_userid() {
   // Check if we already have an ID
@@ -287,7 +294,9 @@ class VectorBar {
     }
 
     bar.style.width = `${percentage}%`;
-    stats.innerHTML = `C: ${this._c.toFixed(1)} | Smax: ${this._sMax.toFixed(1)} | Cur: ${this._currentS.toFixed(1)}`;
+    stats.innerHTML = `C: ${this._c.toFixed(1)}`;
+    stats.innerHTML += `<div class="h-1"></div>`;
+    stats.innerHTML += `Time: ${this._currentS.toFixed(1)} | SMAX: ${this._sMax.toFixed(1)}`;
   }
 
   public render() {
@@ -883,7 +892,7 @@ interface CreateRequest {
   voucher: ReqVoucher;
 }
 interface ReqVoucher {
-  hours: number;
+  dur: number;
   coeff: string;
   name: string;
   description: string;
@@ -898,46 +907,6 @@ interface Voucher {
   description: string;
 }
 
-async function apiActionBuyVoucher(path: string) {
-  const modal = document.getElementById("buy-modal");
-
-  const formElem = document.getElementById("buy-form") as HTMLFormElement;
-
-  if (modal) {
-    formElem.addEventListener("submit", async (e) => {
-      e.preventDefault();
-
-      try {
-        const formData = new FormData(formElem);
-        const voucher_p: ReqVoucher = {
-          coeff: formData.get("coeff") as string,
-          name: formData.get("name") as string,
-          description: formData.get("description") as string,
-          hours: Number(formData.get("hours")),
-        };
-        let payload: CreateRequest = {
-          userid: get_userid(),
-          voucher: voucher_p,
-        };
-        const response = await fetch(`${API_BASE}${path}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-
-        if (response.ok) {
-          await sleep(750);
-          (window as any).closeModal();
-        } else {
-          switch_svg();
-        }
-      } catch (err) {
-        console.log(err);
-        switch_svg();
-      }
-    });
-  }
-}
 async function apiActionCreateVoucher(path: string) {
   const modal_div = document.getElementById("modaldiv");
   if (modal_div) {
@@ -969,7 +938,7 @@ async function apiActionCreateVoucher(path: string) {
           coeff: formData.get("coeff") as string,
           name: formData.get("name") as string,
           description: formData.get("description") as string,
-          hours: Number(formData.get("hours")),
+          dur: Number(formData.get("hours")),
         };
         let payload: CreateRequest = {
           userid: get_userid(),
@@ -1231,9 +1200,9 @@ async function flip_new(uuid: string) {
   uuid: string,
   normal: boolean,
 ) {
-  let payload = { id, userid: get_userid(), amount: 0, hours: 0 };
+  let payload = { id, userid: get_userid(), amount: 0, dur: 0 };
   payload.amount = 1;
-  payload.hours = 1;
+  payload.dur = 1;
 
   let templates: Voucher[] = await apiActionGetVouchers(
     "/get_user_vouchers",
@@ -1256,7 +1225,7 @@ async function flip_new(uuid: string) {
       if (resp.ok) {
         new RewardManager([{ reward_type: "Voucher", amount: payload.amount }]);
       } else {
-        button_err(uuid);
+        button_err(uuid, true);
       }
     } catch (err) {
       console.log(err);
@@ -1290,9 +1259,9 @@ async function flip_new(uuid: string) {
 
         if (formdata) {
           payload.id = Number(formdata.get("voucherid"));
-          payload.hours = Number(formdata.get("hours"));
+          payload.dur = Number(formdata.get("hours"));
         }
-        console.log(payload.hours);
+        console.log(payload.dur);
         let resp = await fetch(`${API_BASE}/purchase`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1302,6 +1271,9 @@ async function flip_new(uuid: string) {
           new RewardManager([
             { reward_type: "Voucher", amount: payload.amount },
           ]);
+          modal.remove();
+        } else {
+          button_err("none", false);
         }
       } catch (err) {
         console.log(err);
@@ -1507,8 +1479,17 @@ async function showVoucherCtx(
     openSliderModal();
   });
 }
-async function button_err(uuid: string) {
-  const buyButton = document.getElementById(uuid)!.querySelector("button")!;
+async function button_err(uuid: string, voucher: boolean) {
+  let buyButton: HTMLButtonElement;
+  if (voucher) {
+    buyButton = document
+      .getElementById(uuid)!
+      .querySelector("button") as HTMLButtonElement;
+  } else {
+    buyButton = document.querySelector("#buymodal-btn") as HTMLButtonElement;
+  }
+  if (!buyButton) return;
+
   let innerH = buyButton.innerHTML;
 
   buyButton.disabled = true;
@@ -1960,17 +1941,17 @@ const buymodal = `
                 <div class="grid grid-cols-2 gap-4">
                     <div>
                         <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Total Hours</label>
-                        <input type="number" name="hours" placeholder="24" value=1
+                        <input type="number" name="hours" placeholder="4" value="1" step="0.05" min="0.1" max="24.0"
                             class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
                     </div>
                     <div>
                         <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Amount</label>
-                        <input type="number" name="amount" placeholder="1" value=1
+                        <input type="number" name="amount" placeholder="1.0" step="1" value="1" min="1" max="255"
                             class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
                     </div>
                 </div>
 
-                <button id="buy-modal-btn" type="submit" class="text-sm mt-4 w-full bg-emerald-600 text-slate-900 font-black py-4 rounded-xl hover:bg-emerald-400 active:scale-[0.98] transition-all duration-200 flex justify-center items-center shadow-lg shadow-emerald-900/40 uppercase tracking-wider">
+                <button id="buymodal-btn" type="submit" class="text-sm mt-4 w-full bg-emerald-600 text-slate-900 font-black py-4 rounded-xl hover:bg-emerald-400 active:scale-[0.98] transition-all duration-200 flex justify-center items-center shadow-lg shadow-emerald-900/40 uppercase tracking-wider">
                     <div class="flex justify-center mx-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
                             <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
@@ -2011,16 +1992,17 @@ const modaldivcontent = `
                     <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Coefficient Type</label>
                     <select name="coeff"
                         class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-slate-100 focus:outline-none focus:border-emerald-500 transition-colors appearance-none cursor-pointer">
-                        <option value="base">Base</option>
-                        <option value="exp">EXP</option>
-                        <option value="g">G</option>
-                        <option value="fun_g">Fun G</option>
-                        <option value="pure_c">Pure C</option>
+                        <option value="base">IDLE</option>
+                        <option value="exp">Expansion</option>
+                        <option value="g">Stability / Growth</option>
+                        <option value="fun_g">Meta</option>
+                        <option value="pure_c">Leisure</option>
+                        <option value="maint">Maintenance</option>
                     </select>
                 </div>
                     <div>
                         <label class="block text-[10px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-1.5">Total Hours</label>
-                        <input type="number" name="hours" placeholder="24" value=1
+                        <input type="number" name="hours" placeholder="24" value=1 step=0.1 min=1 max=24
                             class="w-full bg-slate-800 border border-slate-600 rounded-xl px-4 py-3 text-emerald-400 font-mono focus:outline-none focus:border-emerald-500 transition-colors">
                     </div>
                 </div>
@@ -2097,12 +2079,6 @@ document.querySelector("#app")!.innerHTML = `
       </button>
       <button id="pull10-btn" class="w-full py-3 md:py-4 bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)]">
         Pull x10
-      </button>
-      <button id="timer-btn-stop" class="w-full py-3 md:py-4 bg-red-600 hover:bg-red-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-lg shadow-emerald-500/20">
-        Stop Timer
-      </button>
-      <button id="timer-btn" class="w-full py-3 md:py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all rounded-xl font-bold text-base md:text-lg shadow-lg shadow-emerald-500/20">
-        Timer
       </button>
     </div>
   </div>
@@ -2274,7 +2250,7 @@ document.querySelector("#app")!.innerHTML = `
 <div id="slider-modal" class="fixed inset-0 z-[200] items-center justify-center bg-black/60 backdrop-blur-sm hidden">
   <div class="bg-slate-900 border border-slate-700 w-80 p-6 rounded-2xl shadow-2xl scale-95 animate-in fade-in zoom-in duration-200">
 
-    <h3 class="text-xl font-bold text-white mb-1">Purchase Quantity</h3>
+    <h3 class="text-xl font-bold text-white mb-1">e Quantity</h3>
     <p class="text-slate-400 text-sm mb-6">Select how many you'd like to buy.</p>
 
     <div class="flex justify-center mb-2">
@@ -2425,12 +2401,17 @@ document
   );
 
 document.querySelector("#stock")?.addEventListener("click", () =>
-  apiActionGetVouchers("/get_user_vouchers", false, {
-    userid: get_userid(),
-    filter_by_id: 0,
-    request_all: true,
-    store: false,
-  }),
+  apiActionGetVouchers(
+    "/get_user_vouchers",
+    false,
+    {
+      userid: get_userid(),
+      filter_by_id: 0,
+      request_all: true,
+      store: false,
+    },
+    false,
+  ),
 );
 document.querySelector("#store")?.addEventListener("click", () => {
   apiActionGetTemplates("/get_user_vouchers", {
@@ -2717,7 +2698,7 @@ async function runTask(barpage: BarPage) {
         container.classList.add("opacity-100");
 
         updateBars(barpage, 255);
-      }, 20);
+      }, 300);
     }, 250);
   });
   while (true) {
